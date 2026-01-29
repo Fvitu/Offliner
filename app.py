@@ -9,6 +9,7 @@ import uuid
 import json
 import logging
 import threading
+import shutil
 from logging.handlers import RotatingFileHandler
 
 from flask import (
@@ -77,7 +78,12 @@ def create_app(config_name="development"):
 
 
 def setup_logging(app):
-    """Configura el sistema de logging de la aplicación."""
+    # Configura el sistema de logging de la aplicación.
+
+    # Eliminar handlers duplicados de Flask si existen
+    if app.logger.hasHandlers():
+        app.logger.handlers.clear()
+
     # Crear directorio de logs si no existe
     log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
     if not os.path.exists(log_dir):
@@ -333,6 +339,15 @@ def register_routes(app, limiter):
                             {"percent": percent, "status": status, "detail": detail}
                         )
 
+            # Definir directorio del script y temporal único
+            SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+            temp_dir = os.path.join(SCRIPT_DIR, "Descargas", "Temp", task_id)
+
+            # Asegurar que el directorio temporal existe (y empezar limpio)
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            os.makedirs(temp_dir, exist_ok=True)
+
             if is_playlist_mode and selected_urls:
                 # Modo playlist: descargar URLs seleccionadas
                 from main import iniciar_descarga_selectiva
@@ -342,13 +357,18 @@ def register_routes(app, limiter):
                     selected_urls,
                     nombre_archivo,
                     progress_callback,
+                    base_folder=temp_dir,
                 )
             else:
                 # Modo normal: usar la función existente
                 from main import iniciar_con_progreso
 
                 archivo_a_descargar = iniciar_con_progreso(
-                    user_config, input_url, nombre_archivo, progress_callback
+                    user_config,
+                    input_url,
+                    nombre_archivo,
+                    progress_callback,
+                    base_folder=temp_dir,
                 )
 
             # Marcar como completado
@@ -358,6 +378,12 @@ def register_routes(app, limiter):
                     download_progress[task_id]["percent"] = 100
 
             if not archivo_a_descargar or not os.path.exists(archivo_a_descargar):
+                # Limpiar directorio temporal si falló
+                if os.path.exists(temp_dir):
+                    try:
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                    except Exception:
+                        pass
                 with progress_lock:
                     if task_id in download_progress:
                         download_progress[task_id]["error"] = "No se pudo descargar"
@@ -386,15 +412,15 @@ def register_routes(app, limiter):
                 download_name=nombre_archivo_final,
             )
 
-            # Eliminar archivo del servidor después de enviar
+            # Eliminar el directorio temporal completo después de enviar
             @response.call_on_close
             def cleanup_file():
                 try:
-                    if os.path.exists(archivo_a_descargar):
-                        os.remove(archivo_a_descargar)
-                        app.logger.info(f"Archivo eliminado del servidor: {nombre_log}")
+                    if os.path.exists(temp_dir):
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                        app.logger.info(f"Directorio temporal eliminado: {temp_dir}")
                 except Exception as e:
-                    app.logger.error(f"Error al eliminar archivo del servidor: {e}")
+                    app.logger.error(f"Error al eliminar directorio temporal: {e}")
 
             return response
 

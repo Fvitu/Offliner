@@ -93,13 +93,16 @@ def obtener_opciones_base_ytdlp():
             "http": lambda n: min(2**n, 30)
         },  # Exponential backoff max 30s
         "socket_timeout": 60,
-        # Usar cliente android para evitar bloqueos por falta de PO Token (evita error 403)
-        # Nota: Esto podría limitar la calidad máxima a 360p/720p en algunos videos si no se usan cookies
+        # Descargar en chunks de 10MB ayuda a prevenir errores 403 en conexiones largas
+        # y permite reanudar mejor si se cae la conexión
+        "http_chunk_size": 10485760,
+        # Usar configuración default más robusta con cookies, sin forzar cliente
         "extractor_args": {
             "youtube": {
-                "player_client": ["android"],
+                "player_client": ["android_music"],
             }
         },
+        # Headers estándar del navegador
         # Headers estándar del navegador
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -107,6 +110,18 @@ def obtener_opciones_base_ytdlp():
         },
         # Ignorar errores de HTTPS en algunos casos
         "nocheckcertificate": True,
+        # Usar cookies desde archivo si existe 'cookies.txt' en el directorio
+        # Esto es más estable que extraerlas del navegador y evita el error de "database locked"
+        # "cookiefile": "cookies.txt",  # Deshabilitado para evitar errores 403
+        # Verificar que el formato seleccionado es realmente descargable
+        "check_formats": "selected",
+        # Forzar IPv4 para prevenir errores 403 (común en algunas redes/ISP)
+        "force_ipv4": True,
+        # IMPORTANTE: No reanudar descargas parciales.
+        # Las URLs de YouTube expiran y reanudar causa error 403.
+        # Es mejor reiniciar la descarga con una URL fresca.
+        "continuedl": False,
+        "overwrites": True,
         # No usar caché para evitar datos obsoletos
         "cachedir": False,
         # Asegurar que los nombres de archivo usen encoding correcto
@@ -628,6 +643,10 @@ def _convertir_video_ffmpeg(archivo_origen, archivo_destino, formato):
         cmd = (
             [
                 "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-stats",
                 "-i",
                 archivo_origen,
                 "-c:v",
@@ -644,13 +663,13 @@ def _convertir_video_ffmpeg(archivo_origen, archivo_destino, formato):
         logger.debug(f"Archivo destino: {archivo_destino}")
 
         # Ejecutar FFmpeg con encoding UTF-8 para manejar rutas con caracteres especiales
-        # En Windows, especificamos el encoding explícitamente
+        # En Windows, especificamos el encoding explícitamente y PERMITIMOS mostrar la ventana/consola para ver stats
         result = subprocess.run(
             cmd,
-            capture_output=True,
+            capture_output=False,  # Importante: False para que stdout/stderr vayan a la consola
             encoding="utf-8",
             errors="replace",
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            # creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0, # Comentado para permitir ver output
         )
 
         if result.returncode != 0:
@@ -737,7 +756,8 @@ def descargar_metadata(
         client_id: Client ID de Spotify (opcional, usa el por defecto si no se provee)
         client_secret: Client Secret de Spotify (opcional, usa el por defecto si no se provee)
     """
-    print("🔍 Scrappeando metadata de Spotify...")
+    # print("🔍 Scrappeando metadata de Spotify...")
+    logger.info("Scrappeando metadata de Spotify...")
     try:
         # Usar credenciales por defecto si no se proporcionan
         spotify_client_id = client_id if client_id else SPOTIFY_CLIENT_ID
@@ -1192,10 +1212,11 @@ def descargar_video_legacy(config, url):
     try:
         # Selectores de formato con sintaxis válida de yt-dlp
         # Orden de prioridad: primero intenta formato específico, luego fallback
+        # Prioridad AVC1 (H.264) para máxima compatibilidad y evitar errores 403
         calidad_map = {
-            "min": "worst",  # Peor calidad disponible (generalmente 360p)
-            "avg": "bestvideo[height<=720]+bestaudio/best",  # Video hasta 720p + audio
-            "max": "bestvideo+bestaudio/best",  # Mejor calidad disponible
+            "min": "bestvideo[height<=360][vcodec^=avc1]+bestaudio/bestvideo[height<=360]+bestaudio/best",
+            "avg": "bestvideo[height<=720][vcodec^=avc1]+bestaudio/bestvideo[height<=720]+bestaudio/best",
+            "max": "bestvideo[vcodec^=avc1]+bestaudio/bestvideo+bestaudio/best",
         }
         calidad_video = calidad_map.get(
             config.get("Calidad_audio_video", "avg"),
@@ -1639,10 +1660,16 @@ def limpiar_nombre_archivo(nombre):
 
 
 # Función para comprimir y mover archivos
-def comprimir_y_mover_archivos(nombre_archivo_final, canciones_descargadas):
+def comprimir_y_mover_archivos(
+    nombre_archivo_final, canciones_descargadas, output_folder=None
+):
     try:
         # Usar rutas absolutas basadas en el directorio del script
-        carpeta_zip = os.path.join(SCRIPT_DIR, "Descargas", "Zip")
+        if output_folder:
+            carpeta_zip = output_folder
+        else:
+            carpeta_zip = os.path.join(SCRIPT_DIR, "Descargas", "Zip")
+
         os.makedirs(carpeta_zip, exist_ok=True)  # Crear la carpeta si no existe
 
         # Limpiar el nombre del archivo ZIP y asegurar que no tenga extensión .zip
@@ -1810,7 +1837,11 @@ def iniciar(config, dato, nombre_archivo_final="archivos.zip"):
 
 
 def iniciar_con_progreso(
-    config, dato, nombre_archivo_final="archivos.zip", progress_callback=None
+    config,
+    dato,
+    nombre_archivo_final="archivos.zip",
+    progress_callback=None,
+    base_folder=None,
 ):
     """
     Función principal para iniciar el proceso de descarga con soporte de progreso.
@@ -1821,6 +1852,7 @@ def iniciar_con_progreso(
         dato: URL o término de búsqueda
         nombre_archivo_final: Nombre del archivo ZIP resultante
         progress_callback: Función callback(percent, status, detail) para reportar progreso
+        base_folder: Carpeta base para descargas (opcional, para concurrencia)
 
     Returns:
         str: Ruta del archivo descargado o None si hubo error
@@ -1828,9 +1860,12 @@ def iniciar_con_progreso(
     # Usar objeto para almacenar resultados con callback de progreso
     result = DownloadResult(progress_callback)
 
-    # Crear las carpetas de descarga
-    crear_carpeta(os.path.join(SCRIPT_DIR, "Descargas", "Audio"))
-    crear_carpeta(os.path.join(SCRIPT_DIR, "Descargas", "Video"))
+    # Crear las carpetas de descarga si no se provee base_folder
+    if not base_folder:
+        crear_carpeta(os.path.join(SCRIPT_DIR, "Descargas", "Audio"))
+        crear_carpeta(os.path.join(SCRIPT_DIR, "Descargas", "Video"))
+    else:
+        crear_carpeta(base_folder)
 
     # Lista con todas las urls a descargar
     urls = []
@@ -1981,7 +2016,7 @@ def iniciar_con_progreso(
                         "Descargando video...",
                         f"Elemento {i+1} de {len(urls)}",
                     )
-                _descargar_video_interno(config, url, result)
+                _descargar_video_interno(config, url, result, base_folder)
                 result.completed_items += 1
 
             if config.get("Descargar_audio"):
@@ -1994,7 +2029,7 @@ def iniciar_con_progreso(
                         "Descargando audio...",
                         f"Elemento {i+1} de {len(urls)}",
                     )
-                _descargar_audio_interno(config, url, result)
+                _descargar_audio_interno(config, url, result, base_folder)
                 result.completed_items += 1
 
         fin = time.time()
@@ -2007,8 +2042,16 @@ def iniciar_con_progreso(
         if len(result.canciones_descargadas) > 1:
             if progress_callback:
                 progress_callback(92, "Comprimiendo...", "Creando archivo ZIP")
+
+            # Usar la carpeta base para el ZIP si existe, o default a Descargas/Zip
+            output_folder = (
+                base_folder
+                if base_folder
+                else os.path.join(SCRIPT_DIR, "Descargas", "Zip")
+            )
+
             ruta_descarga = comprimir_y_mover_archivos(
-                nombre_archivo_final, result.canciones_descargadas
+                nombre_archivo_final, result.canciones_descargadas, output_folder
             )
         elif len(result.canciones_descargadas) == 1:
             ruta_descarga = os.path.abspath(result.canciones_descargadas[0])
@@ -2038,7 +2081,7 @@ def iniciar_con_progreso(
         return None
 
 
-def _descargar_audio_interno(config, url, result):
+def _descargar_audio_interno(config, url, result, base_folder=None):
     """
     Versión interna de descargar_audio que usa objeto result.
 
@@ -2046,6 +2089,7 @@ def _descargar_audio_interno(config, url, result):
         config: Configuración del usuario
         url: URL del video
         result: Objeto DownloadResult para almacenar resultados
+        base_folder: Carpeta base para descargas (opcional)
     """
     try:
         # Detectar si es una URL de Spotify y convertir a YouTube
@@ -2099,19 +2143,26 @@ def _descargar_audio_interno(config, url, result):
                     logger.info(
                         f"Usando audio de YouTube Music: '{titulo_ytmusic}' de '{artista_ytmusic}'"
                     )
-                else:
-                    logger.info(f"No se encontró en YouTube Music, usando URL original")
+            else:
+                logger.info(f"No se encontró en YouTube Music, usando URL original")
 
-            carpeta_audio = os.path.join(SCRIPT_DIR, "Descargas", "Audio")
+            if base_folder:
+                carpeta_audio = base_folder
+            else:
+                carpeta_audio = os.path.join(SCRIPT_DIR, "Descargas", "Audio")
+
             crear_carpeta(carpeta_audio)
 
             nombre_archivo = f"{titulo_limpio}"
             archivo_audio = os.path.join(carpeta_audio, nombre_archivo)
             archivo_audio = os.path.normpath(archivo_audio)
 
-            es_archivo_duplicado = archivo_duplicado(
-                "Descargas", "Audio", f"{nombre_archivo}.{formato_audio}"
-            )
+            es_archivo_duplicado = False
+            # Solo verificar duplicados si NO estamos usando una carpeta temporal única
+            if not base_folder:
+                es_archivo_duplicado = archivo_duplicado(
+                    "Descargas", "Audio", f"{nombre_archivo}.{formato_audio}"
+                )
 
             if not es_archivo_duplicado:
                 logger.info(f"Descargando audio: '{titulo_original}'")
@@ -2169,7 +2220,7 @@ def _descargar_audio_interno(config, url, result):
         result.audios_error += 1
 
 
-def _descargar_video_interno(config, url, result):
+def _descargar_video_interno(config, url, result, base_folder=None):
     """
     Versión interna de descargar_video que usa objeto result.
 
@@ -2177,6 +2228,7 @@ def _descargar_video_interno(config, url, result):
         config: Configuración del usuario
         url: URL del video
         result: Objeto DownloadResult para almacenar resultados
+        base_folder: Carpeta base para descargas (opcional)
     """
     try:
         # Detectar si es una URL de Spotify y convertir a YouTube
@@ -2195,7 +2247,7 @@ def _descargar_video_interno(config, url, result):
         calidad_map = {
             "min": "worstvideo+worstaudio/worst",  # Peor calidad (ahorra datos)
             "avg": "bestvideo[height<=720]+bestaudio/best[height<=720]/best",  # Video hasta 720p (balanceado)
-            "max": "bestvideo+bestaudio/best",  # Mejor calidad posible
+            "max": "bestvideo+bestaudio/best",  # Mejor calidad posible (4K/8K)
         }
 
         calidad_video = calidad_map.get(
@@ -2211,15 +2263,22 @@ def _descargar_video_interno(config, url, result):
             uploader = info.get("uploader", "Unknown Uploader")
             titulo_limpio = limpiar_titulo(titulo_original)
 
-            carpeta_video = os.path.join(SCRIPT_DIR, "Descargas", "Video")
+            if base_folder:
+                carpeta_video = base_folder
+            else:
+                carpeta_video = os.path.join(SCRIPT_DIR, "Descargas", "Video")
+
             crear_carpeta(carpeta_video)
 
             archivo_video = os.path.join(carpeta_video, titulo_limpio)
             archivo_video = os.path.normpath(archivo_video)
 
-            es_archivo_duplicado = archivo_duplicado(
-                "Descargas", "Video", f"{titulo_limpio}.{formato_video}"
-            )
+            es_archivo_duplicado = False
+            # Solo verificar duplicados si NO estamos usando una carpeta temporal única
+            if not base_folder:
+                es_archivo_duplicado = archivo_duplicado(
+                    "Descargas", "Video", f"{titulo_limpio}.{formato_video}"
+                )
 
             if not es_archivo_duplicado:
                 logger.info(f"Descargando video: '{titulo_original}'")
@@ -2235,6 +2294,28 @@ def _descargar_video_interno(config, url, result):
                 # Construir lista de postprocesadores para SponsorBlock
                 postprocessors = obtener_postprocessors_sponsorblock(config)
 
+                # LIMPIEZA AGRESIVA: Eliminar cualquier archivo temporal existente
+                # Esto es CRÍTICO para evitar que yt-dlp intente reanudar con una URL expirada (Error 403)
+                rutas_limpieza = [
+                    archivo_temp,
+                    f"{archivo_temp}.part",
+                    f"{archivo_temp}.ytdl",
+                    f"{archivo_temp}.mkv",
+                    f"{archivo_temp}.mp4",
+                    f"{archivo_temp}.webm",
+                ]
+                for ruta in rutas_limpieza:
+                    if os.path.exists(ruta):
+                        try:
+                            os.remove(ruta)
+                            logger.info(
+                                f"Limpieza previa: eliminado {os.path.basename(ruta)}"
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"No se pudo eliminar archivo temporal {ruta}: {e}"
+                            )
+
                 # Usar opciones base con cookies y headers
                 ydl_opts = obtener_opciones_base_ytdlp()
                 ydl_opts.update(
@@ -2243,8 +2324,8 @@ def _descargar_video_interno(config, url, result):
                         "merge_output_format": "mkv",  # MKV acepta cualquier codec
                         "outtmpl": archivo_temp,
                         # Mostrar información del formato seleccionado para debugging
-                        "quiet": False,
-                        "no_warnings": False,
+                        "quiet": True,
+                        "no_warnings": True,
                     }
                 )
 
@@ -2906,6 +2987,7 @@ def iniciar_descarga_selectiva(
     urls_seleccionadas,
     nombre_archivo_final="archivos.zip",
     progress_callback=None,
+    base_folder=None,
 ):
     """
     Inicia descarga de URLs seleccionadas.
@@ -2915,15 +2997,19 @@ def iniciar_descarga_selectiva(
         urls_seleccionadas: Lista de URLs a descargar
         nombre_archivo_final: Nombre del archivo ZIP resultante
         progress_callback: Función callback(percent, status, detail) para reportar progreso
+        base_folder: Carpeta base para descargas (opcional)
 
     Returns:
         str: Ruta del archivo ZIP o del archivo individual
     """
     result = DownloadResult(progress_callback)
 
-    # Crear las carpetas de descarga
-    crear_carpeta(os.path.join(SCRIPT_DIR, "Descargas", "Audio"))
-    crear_carpeta(os.path.join(SCRIPT_DIR, "Descargas", "Video"))
+    # Crear las carpetas de descarga si no se provee base_folder
+    if not base_folder:
+        crear_carpeta(os.path.join(SCRIPT_DIR, "Descargas", "Audio"))
+        crear_carpeta(os.path.join(SCRIPT_DIR, "Descargas", "Video"))
+    else:
+        crear_carpeta(base_folder)
 
     try:
         if progress_callback:
@@ -2966,7 +3052,7 @@ def iniciar_descarga_selectiva(
                         "Descargando video...",
                         f"Elemento {i+1} de {len(urls_seleccionadas)}",
                     )
-                _descargar_video_interno(config, url, result)
+                _descargar_video_interno(config, url, result, base_folder)
                 result.completed_items += 1
 
             if config.get("Descargar_audio"):
@@ -2979,7 +3065,7 @@ def iniciar_descarga_selectiva(
                         "Descargando audio...",
                         f"Elemento {i+1} de {len(urls_seleccionadas)}",
                     )
-                _descargar_audio_interno(config, url, result)
+                _descargar_audio_interno(config, url, result, base_folder)
                 result.completed_items += 1
 
         fin = time.time()
