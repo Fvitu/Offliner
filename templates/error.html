@@ -1,0 +1,74 @@
+{% extends "./layout.html" %}
+
+{% block title %}Error - Music Downloader{% endblock %}
+
+{% block customCSS %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}" />
+<style>
+	.error-container {
+		min-height: 70vh;
+		display: flex;
+		flex-direction: column;
+		justify-content: center;
+		align-items: center;
+		text-align: center;
+		padding: 2rem;
+	}
+
+	.error-icon {
+		font-size: 5rem;
+		margin-bottom: 1.5rem;
+		color: #dc3545;
+	}
+
+	.error-title {
+		font-size: 2rem;
+		margin-bottom: 1rem;
+	}
+
+	.error-message {
+		color: #6c757d;
+		margin-bottom: 2rem;
+		max-width: 500px;
+	}
+</style>
+{% endblock %}
+
+{% block body %}
+
+<body class="bg-dark text-light">
+	<div class="container">
+		<div class="error-container">
+			<div class="error-icon">
+				<i class="fa-solid fa-triangle-exclamation"></i>
+			</div>
+			<h1 class="error-title">¡Ups! Algo salió mal</h1>
+
+			{% with messages = get_flashed_messages() %}
+			{% if messages %}
+			{% for message in messages %}
+			<div class="alert alert-danger alert-dismissible fade show" role="alert">
+				<i class="fa-solid fa-circle-exclamation me-2"></i>
+				<strong>{{ message }}</strong>
+				<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+			</div>
+			{% endfor %}
+			{% else %}
+			<p class="error-message">
+				Ha ocurrido un error inesperado. Por favor, intenta de nuevo más tarde o contacta con el soporte si el problema persiste.
+			</p>
+			{% endif %}
+			{% endwith %}
+
+			<div class="d-flex gap-3">
+				<a href="{{ url_for('dashboard') }}" class="btn btn-primary">
+					<i class="fa-solid fa-home me-2"></i>Ir al Dashboard
+				</a>
+				<a href="javascript:history.back()" class="btn btn-outline-secondary">
+					<i class="fa-solid fa-arrow-left me-2"></i>Volver atrás
+				</a>
+			</div>
+		</div>
+	</div>
+</body>
+{% endblock %}

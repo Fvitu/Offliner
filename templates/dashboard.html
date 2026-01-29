@@ -1,0 +1,1731 @@
+{% extends "./layout.html" %} {% block title %} Music Downloader {% endblock %} {% block customCSS %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}" />
+<style>
+    /* Toast animations */
+    .toast-fade-out {
+        animation: fadeOut 0.5s ease-out forwards;
+    }
+
+    @keyframes fadeOut {
+        from {
+            opacity: 1;
+            transform: translateX(0);
+        }
+
+        to {
+            opacity: 0;
+            transform: translateX(100px);
+        }
+    }
+
+    /* Config section styling */
+    .config-section {
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 12px;
+        padding: 1.25rem;
+        margin-bottom: 1.25rem;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        transition: all 0.3s ease;
+    }
+
+    .config-section:hover {
+        background: rgba(255, 255, 255, 0.08);
+        border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .config-section-title {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        margin-bottom: 0.5rem;
+        font-weight: 600;
+        font-size: 1.1rem;
+    }
+
+    .config-section-title i {
+        font-size: 1.25rem;
+        width: 28px;
+        text-align: center;
+    }
+
+    .config-section-description {
+        color: #9ca3af;
+        font-size: 0.875rem;
+        margin-bottom: 1rem;
+        padding-left: 2.5rem;
+    }
+
+    /* Option card styling */
+    .option-card {
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 8px;
+        padding: 0.75rem 1rem;
+        margin-bottom: 0.5rem;
+        transition: all 0.2s ease;
+        cursor: pointer;
+        display: block;
+    }
+
+    .option-card:hover {
+        background: rgba(255, 255, 255, 0.08);
+        border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .option-card.selected {
+        background: rgba(59, 130, 246, 0.15);
+        border-color: rgba(59, 130, 246, 0.5);
+    }
+
+    .option-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 0.5rem;
+    }
+
+    /* Feature badge */
+    .feature-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+        background: rgba(59, 130, 246, 0.2);
+        color: #60a5fa;
+        padding: 0.125rem 0.5rem;
+        border-radius: 9999px;
+        font-size: 0.7rem;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.025em;
+    }
+
+    .feature-badge.new {
+        background: rgba(34, 197, 94, 0.2);
+        color: #4ade80;
+    }
+
+    .feature-badge.beta {
+        background: rgba(251, 191, 36, 0.2);
+        color: #fbbf24;
+    }
+
+    /* Toast container */
+    #toastContainer {
+        z-index: 9999;
+    }
+
+    .toast-custom {
+        min-width: 300px;
+        backdrop-filter: blur(10px);
+    }
+
+    /* Playlist selector styles */
+    .playlist-container {
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 12px;
+        padding: 1rem;
+        margin-top: 1rem;
+    }
+
+    .playlist-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+    }
+
+    .playlist-info {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+    }
+
+    .playlist-thumbnail {
+        width: 80px;
+        height: 80px;
+        border-radius: 8px;
+        object-fit: cover;
+    }
+
+    .playlist-actions {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+    }
+
+    .playlist-items-container {
+        max-height: 500px;
+        overflow-y: auto;
+        padding-right: 0.5rem;
+    }
+
+    .playlist-items-container::-webkit-scrollbar {
+        width: 6px;
+    }
+
+    .playlist-items-container::-webkit-scrollbar-track {
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 3px;
+    }
+
+    .playlist-items-container::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.2);
+        border-radius: 3px;
+    }
+
+    .playlist-item {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.75rem;
+        background: rgba(255, 255, 255, 0.02);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 8px;
+        margin-bottom: 0.5rem;
+        transition: all 0.2s ease;
+    }
+
+    .playlist-item:hover {
+        background: rgba(255, 255, 255, 0.05);
+        border-color: rgba(255, 255, 255, 0.15);
+    }
+
+    .playlist-item.selected {
+        background: rgba(59, 130, 246, 0.1);
+        border-color: rgba(59, 130, 246, 0.3);
+    }
+
+    .playlist-item-thumbnail {
+        width: 60px;
+        height: 45px;
+        border-radius: 4px;
+        object-fit: cover;
+        flex-shrink: 0;
+    }
+
+    .playlist-item-info {
+        flex-grow: 1;
+        min-width: 0;
+    }
+
+    .playlist-item-title {
+        font-size: 0.9rem;
+        font-weight: 500;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        margin-bottom: 0.25rem;
+    }
+
+    .playlist-item-meta {
+        font-size: 0.75rem;
+        color: #9ca3af;
+    }
+
+    .playlist-item-actions {
+        display: flex;
+        gap: 0.5rem;
+        flex-shrink: 0;
+    }
+
+    .btn-config-item {
+        padding: 0.25rem 0.5rem;
+        font-size: 0.75rem;
+    }
+
+    /* Item config modal */
+    .item-config-badge {
+        font-size: 0.65rem;
+        padding: 0.15rem 0.35rem;
+        margin-left: 0.25rem;
+    }
+
+    /* Loading skeleton */
+    .skeleton {
+        animation: skeleton-loading 1s linear infinite alternate;
+    }
+
+    @keyframes skeleton-loading {
+        0% {
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+
+        100% {
+            background-color: rgba(255, 255, 255, 0.1);
+        }
+    }
+
+    .skeleton-item {
+        height: 70px;
+        border-radius: 8px;
+        margin-bottom: 0.5rem;
+    }
+
+    /* Sidebar Offcanvas - Diseño oscuro alineado con la web */
+    .offcanvas-config {
+        width: 420px !important;
+        max-width: 90vw;
+        background: #212529 !important;
+        border-left: 1px solid rgba(255, 255, 255, 0.15);
+    }
+
+    .offcanvas-config .offcanvas-header {
+        border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+        background: rgba(0, 0, 0, 0.3);
+        padding: 1rem 1.25rem;
+    }
+
+    .offcanvas-config .offcanvas-title {
+        color: #fff;
+        font-weight: 600;
+    }
+
+    .offcanvas-config .offcanvas-body {
+        padding: 1rem;
+        background: #212529;
+    }
+
+    .btn-config-trigger {
+        background: #2d2d2d;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        color: #fff;
+        padding: 0.5rem 1rem;
+        font-weight: 500;
+        transition: all 0.3s ease;
+    }
+
+    .btn-config-trigger:hover {
+        background: #3d3d3d;
+        border-color: rgba(255, 255, 255, 0.25);
+        color: #fff;
+        transform: translateY(-1px);
+    }
+
+    .btn-config-trigger:focus {
+        box-shadow: 0 0 0 0.2rem rgba(255, 255, 255, 0.1);
+        background: #3d3d3d;
+        color: #fff;
+    }
+
+    /* Media Preview */
+    .media-preview {
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 12px;
+        padding: 1rem;
+        margin-bottom: 1rem;
+        display: none;
+    }
+
+    .media-preview.visible {
+        display: block;
+        animation: slideIn 0.3s ease-out;
+    }
+
+    @keyframes slideIn {
+        from {
+            opacity: 0;
+            transform: translateY(-10px);
+        }
+
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    .media-preview-content {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+    }
+
+    .media-preview-thumbnail {
+        width: 120px;
+        height: 90px;
+        border-radius: 8px;
+        object-fit: cover;
+        flex-shrink: 0;
+    }
+
+    .media-preview-info {
+        flex-grow: 1;
+        min-width: 0;
+    }
+
+    .media-preview-title {
+        font-weight: 600;
+        font-size: 1rem;
+        margin-bottom: 0.25rem;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .media-preview-meta {
+        color: #9ca3af;
+        font-size: 0.85rem;
+    }
+
+    .source-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+        padding: 0.25rem 0.5rem;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        font-weight: 500;
+    }
+
+    .source-badge.youtube {
+        background: rgba(255, 0, 0, 0.15);
+        color: #ff4444;
+    }
+
+    .source-badge.youtube_music {
+        background: rgba(255, 0, 0, 0.15);
+        color: #ff6666;
+    }
+
+    .source-badge.spotify {
+        background: rgba(30, 215, 96, 0.15);
+        color: #1ed760;
+    }
+
+    .media-preview-loading {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1rem;
+    }
+</style>
+{% endblock %} {% block body %}
+
+<body class="bg-dark text-light">
+    <!-- Toast Container -->
+    <div id="toastContainer" class="toast-container position-fixed top-0 end-0 p-3" style="margin-top: 70px;"></div>
+
+    <nav class="navbar navbar-expand-lg navbar-dark rounded text-center" aria-label="Thirteenth navbar example">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="{{url_for('dashboard')}}">
+                <i class="fa-duotone fa-down-to-bracket"></i> Music - Downloader
+            </a>
+
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar"
+                    aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+
+            <div class="navbar-collapse collapse" id="navbar">
+                <ul class="navbar-nav mx-auto"></ul>
+                <div class="d-flex align-items-center gap-3">
+                    <button class="btn btn-config-trigger" type="button" data-bs-toggle="offcanvas"
+                            data-bs-target="#configSidebar" aria-controls="configSidebar">
+                        <i class="fa-solid fa-gear me-2"></i>
+                        Configurar descarga
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mt-5">
+        <h1 class="text-center mb-4">
+            <img src="https://em-content.zobj.net/source/animated-noto-color-emoji/356/waving-hand_1f44b.gif"
+                 alt="Mano saludando" width="45px" />
+            Music Downloader
+        </h1>
+
+        <p class="text-center text-muted mb-5">
+            Descarga fácilmente vídeos y audios de YouTube y Spotify. Tu configuración se guarda localmente en tu navegador.
+            <br><small class="text-success"><i class="fa-solid fa-lock me-1"></i>No almacenamos ningún dato tuyo - tu privacidad es importante.</small>
+        </p>
+
+        <div class="row justify-content-center">
+            <div class="col-lg-10">
+                <!-- Sección de Descarga -->
+                <div class="card bg-dark border-primary">
+                    <div class="card-header bg-transparent border-primary">
+                        <h5 class="mb-0">
+                            <i class="fa-solid fa-cloud-arrow-down text-primary me-2"></i>
+                            Descargar Canciones y Videos
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted mb-4">
+                            Ingresa una URL de YouTube/Spotify o el nombre de una canción para comenzar la descarga.
+                        </p>
+
+                        <form id="downloadForm" method="POST" action="#">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" required />
+                            <input type="hidden" name="selected_urls" id="selectedUrlsInput" value="" />
+                            <input type="hidden" name="is_playlist_mode" id="isPlaylistModeInput" value="false" />
+                            <input type="hidden" name="user_config" id="userConfigInput" value="{}" />
+
+                            <div class="mb-3">
+                                <div class="input-group input-group-lg">
+                                    <span class="input-group-text bg-dark border-secondary">
+                                        <i class="fa-solid fa-search text-muted"></i>
+                                    </span>
+                                    <input type="text" class="form-control bg-dark border-secondary text-light"
+                                           id="inputURL" name="inputURL"
+                                           placeholder="URL o nombre de la canción..."
+                                           autocomplete="off">
+                                </div>
+                                <small class="text-muted mt-1 d-block">
+                                    <i class="fa-solid fa-lightbulb text-warning me-1"></i>
+                                    Se detecta automáticamente la plataforma y tipo de contenido (canción o playlist).
+                                </small>
+                            </div>
+
+                            <!-- Media Preview (para videos/tracks individuales) -->
+                            <div id="mediaPreview" class="media-preview">
+                                <div id="mediaPreviewLoading" class="media-preview-loading" style="display: none;">
+                                    <span class="spinner-border spinner-border-sm me-2"></span>
+                                    Obteniendo información...
+                                </div>
+                                <div id="mediaPreviewContent" class="media-preview-content">
+                                    <img id="mediaThumbnail" src="" alt="Thumbnail" class="media-preview-thumbnail">
+                                    <div class="media-preview-info">
+                                        <div class="d-flex align-items-center gap-2 mb-1">
+                                            <span id="mediaSource" class="source-badge youtube">
+                                                <i class="fa-brands fa-youtube"></i> YouTube
+                                            </span>
+                                        </div>
+                                        <div id="mediaTitle" class="media-preview-title">Título del video</div>
+                                        <div class="media-preview-meta">
+                                            <i class="fa-solid fa-user me-1"></i>
+                                            <span id="mediaAuthor">Autor</span>
+                                            <span class="mx-2">•</span>
+                                            <i class="fa-solid fa-clock me-1"></i>
+                                            <span id="mediaDuration">0:00</span>
+                                        </div>
+                                    </div>
+                                    <button type="button" class="btn btn-outline-secondary btn-sm" id="closeMediaPreview">
+                                        <i class="fa-solid fa-times"></i>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Contenedor de Playlist (oculto por defecto) -->
+                            <div id="playlistContainer" class="playlist-container" style="display: none;">
+                                <div class="playlist-header">
+                                    <div class="playlist-info">
+                                        <img id="playlistThumbnail" src="" alt="Playlist" class="playlist-thumbnail" style="display: none;">
+                                        <div>
+                                            <h6 id="playlistTitle" class="mb-1">Cargando playlist...</h6>
+                                            <small id="playlistMeta" class="text-muted"></small>
+                                        </div>
+                                    </div>
+                                    <div class="playlist-actions">
+                                        <button type="button" class="btn btn-sm btn-outline-success" id="selectAllBtn">
+                                            <i class="fa-solid fa-check-double me-1"></i> Seleccionar Todo
+                                        </button>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary" id="selectNoneBtn">
+                                            <i class="fa-solid fa-xmark me-1"></i> Deseleccionar Todo
+                                        </button>
+                                        <button type="button" class="btn btn-sm btn-outline-danger" id="closePlaylistBtn">
+                                            <i class="fa-solid fa-times"></i>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <!-- Loading skeleton -->
+                                <div id="playlistLoading">
+                                    <div class="skeleton skeleton-item"></div>
+                                    <div class="skeleton skeleton-item"></div>
+                                    <div class="skeleton skeleton-item"></div>
+                                    <div class="skeleton skeleton-item"></div>
+                                    <div class="skeleton skeleton-item"></div>
+                                </div>
+
+                                <!-- Items container -->
+                                <div id="playlistItemsContainer" class="playlist-items-container" style="display: none;">
+                                    <!-- Los items se cargan dinámicamente -->
+                                </div>
+
+                                <!-- Selected count -->
+                                <div class="d-flex justify-content-between align-items-center mt-3 pt-3 border-top border-secondary">
+                                    <span class="text-muted">
+                                        <i class="fa-solid fa-check-circle text-success me-1"></i>
+                                        <span id="selectedCount">0</span> de <span id="totalCount">0</span> seleccionados
+                                    </span>
+                                    <span class="text-muted small">
+                                        <i class="fa-solid fa-clock me-1"></i>
+                                        Duración total: <span id="totalDuration">00:00</span>
+                                    </span>
+                                </div>
+                            </div>
+
+                            <!-- Barra de progreso -->
+                            <div id="progressContainer" class="mb-3" style="display: none;">
+                                <div class="d-flex justify-content-between mb-1">
+                                    <span id="progressStatus" class="text-light small">Iniciando descarga...</span>
+                                    <span id="progressPercentage" class="text-light small">0%</span>
+                                </div>
+                                <div class="progress" style="height: 8px; border-radius: 4px;">
+                                    <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-primary"
+                                         role="progressbar" style="width: 0%;">
+                                    </div>
+                                </div>
+                                <small id="progressDetail" class="text-muted mt-1 d-block"></small>
+                            </div>
+
+                            <button id="downloadBtn" type="submit" class="btn btn-primary btn-lg w-100">
+                                <i class="fa-solid fa-download me-2"></i>
+                                <span id="downloadBtnText">Iniciar Descarga</span>
+                            </button>
+                            <button id="downloadingBtn" type="button" class="btn btn-secondary btn-lg w-100" style="display: none" disabled>
+                                <span class="spinner-border spinner-border-sm me-2"></span>
+                                Procesando...
+                            </button>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Footer -->
+                <footer class="text-center mt-5 mb-4">
+                    <span class="text-muted">
+                        Creado con <i class="fa-solid fa-heart text-danger"></i> por
+                        <span class="text-light">Fede Vitu</span> &copy; 2024
+                    </span>
+                </footer>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ============================================
+        // Configuración por defecto del servidor
+        // ============================================
+        const DEFAULT_CONFIG = JSON.parse(`{{ config | tojson | safe }}`);
+        const STORAGE_KEY = 'music_downloader_config';
+
+        // ============================================
+        // Funciones de localStorage para configuración
+        // ============================================
+        function getConfig() {
+            try {
+                const stored = localStorage.getItem(STORAGE_KEY);
+                if (stored) {
+                    const parsed = JSON.parse(stored);
+                    // Merge con defaults para asegurar que existan todas las claves
+                    return { ...DEFAULT_CONFIG, ...parsed };
+                }
+            } catch (e) {
+                console.error('Error leyendo configuración:', e);
+            }
+            return { ...DEFAULT_CONFIG };
+        }
+
+        function saveConfig(config) {
+            try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+                return true;
+            } catch (e) {
+                console.error('Error guardando configuración:', e);
+                return false;
+            }
+        }
+
+        function getCurrentFormConfig() {
+            const config = {};
+
+            // Radio buttons
+            document.querySelectorAll('#configForm input[type="radio"]:checked').forEach(radio => {
+                config[radio.name] = radio.value;
+            });
+
+            // Checkboxes (excepto SponsorBlock categories)
+            document.querySelectorAll('#configForm input[type="checkbox"]:not(.sponsorblock-category)').forEach(checkbox => {
+                config[checkbox.name] = checkbox.checked;
+            });
+
+            // SponsorBlock categories
+            const categories = [];
+            document.querySelectorAll('.sponsorblock-category:checked').forEach(checkbox => {
+                categories.push(checkbox.value);
+            });
+            config['SponsorBlock_categories'] = categories;
+
+            // Auto-detectar fuente desde la URL actual
+            const inputURL = document.getElementById('inputURL')?.value?.trim() || '';
+            const fuente = detectarFuente(inputURL);
+            if (fuente === 'spotify') {
+                config['Fuente_descarga'] = 'Spotify';
+            } else {
+                config['Fuente_descarga'] = 'YouTube';
+            }
+
+            return config;
+        }
+
+        function applyConfigToForm(config) {
+            // Radio buttons (sin Fuente_descarga - ahora se auto-detecta)
+            ['Calidad_audio_video', 'Formato_audio', 'Formato_video'].forEach(name => {
+                // Primero remover 'selected' de todos los cards del mismo grupo
+                document.querySelectorAll(`input[name="${name}"]`).forEach(r => {
+                    r.closest('.option-card')?.classList.remove('selected');
+                });
+
+                const value = config[name];
+                const radio = document.querySelector(`input[name="${name}"][value="${value}"]`);
+                if (radio) {
+                    radio.checked = true;
+                    radio.closest('.option-card')?.classList.add('selected');
+                }
+            });
+
+            // Checkboxes
+            ['Descargar_audio', 'Descargar_video', 'Scrappear_metadata', 'Preferir_YouTube_Music', 'SponsorBlock_enabled'].forEach(name => {
+                const checkbox = document.querySelector(`input[name="${name}"]`);
+                if (checkbox) {
+                    checkbox.checked = !!config[name];
+                    checkbox.closest('.option-card')?.classList.toggle('selected', checkbox.checked);
+                }
+            });
+
+            // SponsorBlock categories
+            if (config.SponsorBlock_categories && Array.isArray(config.SponsorBlock_categories)) {
+                config.SponsorBlock_categories.forEach(cat => {
+                    const checkbox = document.querySelector(`.sponsorblock-category[value="${cat}"]`);
+                    if (checkbox) {
+                        checkbox.checked = true;
+                        checkbox.closest('.option-card')?.classList.add('selected');
+                    }
+                });
+            }
+
+            // Toggle SponsorBlock categories visibility
+            toggleSponsorBlockCategories();
+        }
+
+        // ============================================
+        // Auto-detección de fuente desde URL
+        // ============================================
+        function detectarFuente(url) {
+            if (!url) return null;
+            const urlLower = url.toLowerCase();
+
+            if (urlLower.includes('spotify.com')) {
+                return 'spotify';
+            } else if (urlLower.includes('music.youtube.com')) {
+                return 'youtube_music';
+            } else if (urlLower.includes('youtube.com') || urlLower.includes('youtu.be')) {
+                return 'youtube';
+            }
+            return null;
+        }
+
+        function esURLValida(url) {
+            return detectarFuente(url) !== null;
+        }
+
+        // ============================================
+        // Media Preview System
+        // ============================================
+        let mediaPreviewTimeout = null;
+        let currentMediaInfo = null;
+        let isProcessingInput = false;
+
+        function showMediaPreview(info) {
+            const preview = document.getElementById('mediaPreview');
+            const content = document.getElementById('mediaPreviewContent');
+            const loading = document.getElementById('mediaPreviewLoading');
+
+            // Ocultar loading y mostrar contenido
+            loading.style.display = 'none';
+            content.style.display = 'flex';
+
+            // Actualizar información
+            document.getElementById('mediaThumbnail').src = info.thumbnail || 'https://via.placeholder.com/120x90?text=No+Image';
+            document.getElementById('mediaTitle').textContent = info.titulo || 'Sin título';
+            document.getElementById('mediaAuthor').textContent = info.autor || 'Desconocido';
+            document.getElementById('mediaDuration').textContent = info.duracion || '0:00';
+
+            // Actualizar badge de fuente
+            const sourceBadge = document.getElementById('mediaSource');
+            sourceBadge.className = 'source-badge ' + (info.fuente || 'youtube');
+
+            const sourceIcons = {
+                'youtube': '<i class="fa-brands fa-youtube"></i> YouTube',
+                'youtube_music': '<i class="fa-brands fa-youtube"></i> YouTube Music',
+                'spotify': '<i class="fa-brands fa-spotify"></i> Spotify'
+            };
+            sourceBadge.innerHTML = sourceIcons[info.fuente] || sourceIcons.youtube;
+
+            // Mostrar preview con animación
+            preview.classList.add('visible');
+            currentMediaInfo = info;
+        }
+
+        function hideMediaPreview() {
+            const preview = document.getElementById('mediaPreview');
+            preview.classList.remove('visible');
+            currentMediaInfo = null;
+        }
+
+        function showMediaPreviewLoading() {
+            const preview = document.getElementById('mediaPreview');
+            const content = document.getElementById('mediaPreviewContent');
+            const loading = document.getElementById('mediaPreviewLoading');
+
+            content.style.display = 'none';
+            loading.style.display = 'flex';
+            preview.classList.add('visible');
+        }
+
+        async function fetchMediaInfo(url) {
+            try {
+                showMediaPreviewLoading();
+
+                const formData = new FormData();
+                formData.append('url', url);
+                formData.append('csrf_token', '{{ csrf_token() }}');
+
+                const response = await fetch('/media_info', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (data.es_playlist) {
+                    // Es playlist, ocultar preview y dejar que el sistema de playlist lo maneje
+                    hideMediaPreview();
+                    return { es_playlist: true, fuente: data.fuente };
+                }
+
+                if (data.success) {
+                    showMediaPreview(data);
+                    return { es_playlist: false, info: data };
+                } else {
+                    hideMediaPreview();
+                    return null;
+                }
+            } catch (error) {
+                console.error('Error fetching media info:', error);
+                hideMediaPreview();
+                return null;
+            }
+        }
+
+        // Cerrar media preview
+        document.getElementById('closeMediaPreview')?.addEventListener('click', function () {
+            hideMediaPreview();
+        });
+
+        // ============================================
+        // Toast System
+        // ============================================
+        function showToast(message, type = 'primary') {
+            const container = document.getElementById('toastContainer');
+            const toastId = 'toast-' + Date.now();
+
+            const icons = {
+                'primary': 'fa-circle-info',
+                'success': 'fa-circle-check',
+                'danger': 'fa-circle-exclamation',
+                'warning': 'fa-triangle-exclamation'
+            };
+
+            const toastHtml = `
+				<div id="${toastId}" class="toast toast-custom align-items-center text-bg-${type} border-0 show" role="alert">
+					<div class="d-flex">
+						<div class="toast-body">
+							<i class="fa-solid ${icons[type] || icons.primary} me-2"></i>
+							${message}
+						</div>
+						<button type="button" class="btn-close btn-close-white me-2 m-auto" onclick="closeToast('${toastId}')"></button>
+					</div>
+				</div>
+			`;
+
+            container.insertAdjacentHTML('beforeend', toastHtml);
+
+            // Auto-hide after 5 seconds
+            setTimeout(() => closeToast(toastId), 5000);
+        }
+
+        function closeToast(toastId) {
+            const toast = document.getElementById(toastId);
+            if (toast) {
+                toast.classList.add('toast-fade-out');
+                setTimeout(() => toast.remove(), 500);
+            }
+        }
+
+        // ============================================
+        // Inicialización al cargar la página
+        // ============================================
+        document.addEventListener('DOMContentLoaded', function () {
+            // Cargar configuración guardada
+            const savedConfig = getConfig();
+            applyConfigToForm(savedConfig);
+
+            // Actualizar el input hidden con la configuración
+            document.getElementById('userConfigInput').value = JSON.stringify(savedConfig);
+
+            // ============================================
+            // Config Form - Guardar en localStorage
+            // ============================================
+            document.getElementById('saveConfigBtn').addEventListener('click', function (e) {
+                e.preventDefault();
+
+                const btn = this;
+                const originalContent = btn.innerHTML;
+
+                // Show loading state
+                btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Guardando...';
+                btn.disabled = true;
+
+                const config = getCurrentFormConfig();
+
+                setTimeout(() => {
+                    if (saveConfig(config)) {
+                        showToast('¡Configuración guardada en tu navegador!', 'success');
+                        // Actualizar el input hidden
+                        document.getElementById('userConfigInput').value = JSON.stringify(config);
+
+                        // Cerrar el offcanvas automáticamente
+                        // Usar el ID real del offcanvas
+                        const offcanvasElement = document.getElementById('configSidebar');
+                        let offcanvasInstance = bootstrap.Offcanvas.getInstance(offcanvasElement);
+                        if (!offcanvasInstance) {
+                            offcanvasInstance = new bootstrap.Offcanvas(offcanvasElement);
+                        }
+                        offcanvasInstance.hide();
+                    } else {
+                        showToast('Error al guardar la configuración', 'danger');
+                    }
+
+                    // Restore button
+                    btn.innerHTML = originalContent;
+                    btn.disabled = false;
+                }, 300);
+            });
+
+            // ============================================
+            // Option card selection highlighting
+            // ============================================
+            document.querySelectorAll('.option-card input[type="radio"]').forEach(input => {
+                input.addEventListener('change', function () {
+                    // Remove selected from siblings
+                    const name = this.name;
+                    document.querySelectorAll(`input[name="${name}"]`).forEach(sibling => {
+                        sibling.closest('.option-card').classList.remove('selected');
+                    });
+                    // Add selected to current
+                    this.closest('.option-card').classList.add('selected');
+                });
+            });
+
+            document.querySelectorAll('.option-card input[type="checkbox"]').forEach(input => {
+                input.addEventListener('change', function () {
+                    this.closest('.option-card').classList.toggle('selected', this.checked);
+                });
+            });
+        });
+
+        // ============================================
+        // Toggle functions
+        // ============================================
+        function toggleSponsorBlockCategories() {
+            const checkbox = document.getElementById('sponsorblockEnabled');
+            const categories = document.getElementById('sponsorblockCategories');
+            const card = checkbox.closest('.option-card');
+
+            categories.style.display = checkbox.checked ? 'block' : 'none';
+            card.classList.toggle('selected', checkbox.checked);
+        }
+
+        // ============================================
+        // Playlist System
+        // ============================================
+        let playlistData = null;
+        let selectedItems = new Set();
+        let playlistCheckTimeout = null;
+
+        // Función para verificar si es una URL de playlist
+        function isPlaylistURL(url) {
+            if (!url) return false;
+            const urlLower = url.toLowerCase();
+            return urlLower.includes('list=') ||
+                urlLower.includes('/playlist') ||
+                (urlLower.includes('spotify.com') && urlLower.includes('/playlist/'));
+        }
+
+        // Detección automática de URL al escribir
+        document.getElementById('inputURL').addEventListener('input', function () {
+            // Si ya estamos procesando un paste, ignorar
+            if (isProcessingInput) return;
+
+            const url = this.value.trim();
+
+            // Cancelar timeout anterior si existe
+            if (playlistCheckTimeout) {
+                clearTimeout(playlistCheckTimeout);
+            }
+            if (mediaPreviewTimeout) {
+                clearTimeout(mediaPreviewTimeout);
+            }
+
+            // Si el campo está vacío, ocultar todo
+            if (!url) {
+                hideMediaPreview();
+                if (playlistData) {
+                    document.getElementById('playlistContainer').style.display = 'none';
+                    playlistData = null;
+                    selectedItems.clear();
+                    updateDownloadButton();
+                }
+                return;
+            }
+
+            // Si no es una URL válida, ocultar previews
+            if (!esURLValida(url)) {
+                hideMediaPreview();
+                if (playlistData) {
+                    document.getElementById('playlistContainer').style.display = 'none';
+                    playlistData = null;
+                    selectedItems.clear();
+                    updateDownloadButton();
+                }
+                return;
+            }
+
+            // Si es una URL de playlist
+            if (isPlaylistURL(url)) {
+                hideMediaPreview();
+                playlistCheckTimeout = setTimeout(() => {
+                    checkForPlaylist();
+                }, 800);
+            } else {
+                // Es una URL individual - mostrar preview
+                if (playlistData) {
+                    document.getElementById('playlistContainer').style.display = 'none';
+                    playlistData = null;
+                    selectedItems.clear();
+                    updateDownloadButton();
+                }
+                mediaPreviewTimeout = setTimeout(async () => {
+                    await fetchMediaInfo(url);
+                }, 800);
+            }
+        });
+
+        // También verificar al pegar una URL
+        document.getElementById('inputURL').addEventListener('paste', function () {
+            // Marcar que estamos procesando para evitar duplicados
+            isProcessingInput = true;
+
+            // Cancelar timeouts anteriores
+            if (playlistCheckTimeout) clearTimeout(playlistCheckTimeout);
+            if (mediaPreviewTimeout) clearTimeout(mediaPreviewTimeout);
+
+            setTimeout(async () => {
+                const url = this.value.trim();
+                if (!url) {
+                    isProcessingInput = false;
+                    return;
+                }
+
+                if (!esURLValida(url)) {
+                    hideMediaPreview();
+                    isProcessingInput = false;
+                    return;
+                }
+
+                if (isPlaylistURL(url)) {
+                    hideMediaPreview();
+                    await checkForPlaylist();
+                } else {
+                    // URL individual - obtener info
+                    await fetchMediaInfo(url);
+                }
+
+                isProcessingInput = false;
+            }, 150);
+        });
+
+        async function checkForPlaylist() {
+            const url = document.getElementById('inputURL').value.trim();
+            if (!url || !isPlaylistURL(url)) {
+                return;
+            }
+
+            // Mostrar indicador de carga en el contenedor de playlist
+            const container = document.getElementById('playlistContainer');
+            const loading = document.getElementById('playlistLoading');
+            const itemsContainer = document.getElementById('playlistItemsContainer');
+
+            // Mostrar loading
+            container.style.display = 'block';
+            loading.style.display = 'block';
+            itemsContainer.style.display = 'none';
+            document.getElementById('playlistTitle').textContent = 'Cargando playlist...';
+            document.getElementById('playlistMeta').textContent = 'Obteniendo información...';
+            document.getElementById('playlistThumbnail').style.display = 'none';
+
+            try {
+                const formData = new FormData();
+                formData.append('url', url);
+                formData.append('csrf_token', '{{ csrf_token() }}');
+
+                const response = await fetch('{{ url_for("playlist_info") }}', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (data.success && data.playlist) {
+                    showPlaylistSelector(data.playlist);
+                } else if (data.es_playlist === false) {
+                    container.style.display = 'none';
+                    showToast('Esta URL no es una playlist. Puedes descargarla directamente.', 'info');
+                } else {
+                    container.style.display = 'none';
+                    showToast(data.error || 'No se pudo obtener la playlist', 'danger');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                container.style.display = 'none';
+                showToast('Error al verificar la playlist', 'danger');
+            }
+        }
+
+        function showPlaylistSelector(playlist) {
+            playlistData = playlist;
+            selectedItems = new Set(playlist.items.map(item => item.url)); // Select all by default
+
+            const container = document.getElementById('playlistContainer');
+            const loading = document.getElementById('playlistLoading');
+            const itemsContainer = document.getElementById('playlistItemsContainer');
+
+            // Update header info
+            document.getElementById('playlistTitle').textContent = playlist.titulo;
+            document.getElementById('playlistMeta').textContent =
+                `${playlist.total} videos • ${playlist.autor}`;
+
+            if (playlist.thumbnail) {
+                const thumb = document.getElementById('playlistThumbnail');
+                thumb.src = playlist.thumbnail;
+                thumb.style.display = 'block';
+            }
+
+            // Show container with loading
+            container.style.display = 'block';
+            loading.style.display = 'block';
+            itemsContainer.style.display = 'none';
+
+            // Build items HTML
+            let html = '';
+            playlist.items.forEach((item, index) => {
+                html += `
+					<div class="playlist-item selected" data-url="${item.url}" data-duration="${item.duracion_segundos}">
+						<input type="checkbox" class="form-check-input playlist-item-checkbox" 
+							   checked data-url="${item.url}" 
+							   onchange="togglePlaylistItem(this)">
+						<img src="${item.thumbnail || 'https://via.placeholder.com/60x45?text=No+Image'}" 
+							 alt="${item.titulo}" class="playlist-item-thumbnail"
+							 onerror="this.src='https://via.placeholder.com/60x45?text=No+Image'">
+						<div class="playlist-item-info">
+							<div class="playlist-item-title" title="${item.titulo}">${item.titulo}</div>
+							<div class="playlist-item-meta">
+								<i class="fa-solid fa-clock me-1"></i>${item.duracion}
+								${item.autor ? `• ${item.autor}` : ''}
+							</div>
+						</div>
+						<div class="playlist-item-actions">
+							<span class="badge bg-secondary">${index + 1}</span>
+						</div>
+					</div>
+				`;
+            });
+
+            // Update UI
+            setTimeout(() => {
+                loading.style.display = 'none';
+                itemsContainer.innerHTML = html;
+                itemsContainer.style.display = 'block';
+                updatePlaylistCounts();
+                updateDownloadButton();
+            }, 500);
+        }
+
+        function togglePlaylistItem(checkbox) {
+            const url = checkbox.dataset.url;
+            const item = checkbox.closest('.playlist-item');
+
+            if (checkbox.checked) {
+                selectedItems.add(url);
+                item.classList.add('selected');
+            } else {
+                selectedItems.delete(url);
+                item.classList.remove('selected');
+            }
+
+            updatePlaylistCounts();
+            updateDownloadButton();
+        }
+
+        function updatePlaylistCounts() {
+            const selectedCount = selectedItems.size;
+            const totalCount = playlistData ? playlistData.total : 0;
+
+            document.getElementById('selectedCount').textContent = selectedCount;
+            document.getElementById('totalCount').textContent = totalCount;
+
+            // Calculate total duration
+            let totalSeconds = 0;
+            if (playlistData) {
+                playlistData.items.forEach(item => {
+                    if (selectedItems.has(item.url)) {
+                        totalSeconds += item.duracion_segundos || 0;
+                    }
+                });
+            }
+
+            const hours = Math.floor(totalSeconds / 3600);
+            const minutes = Math.floor((totalSeconds % 3600) / 60);
+            const seconds = totalSeconds % 60;
+
+            let durationStr = '';
+            if (hours > 0) {
+                durationStr = `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+            } else {
+                durationStr = `${minutes}:${String(seconds).padStart(2, '0')}`;
+            }
+
+            document.getElementById('totalDuration').textContent = durationStr;
+        }
+
+        function updateDownloadButton() {
+            const btn = document.getElementById('downloadBtnText');
+            const isPlaylistMode = playlistData !== null && selectedItems.size > 0;
+
+            if (isPlaylistMode) {
+                btn.textContent = `Descargar ${selectedItems.size} elemento(s)`;
+            } else {
+                btn.textContent = 'Iniciar Descarga';
+            }
+
+            document.getElementById('isPlaylistModeInput').value = isPlaylistMode ? 'true' : 'false';
+            document.getElementById('selectedUrlsInput').value = isPlaylistMode ?
+                JSON.stringify(Array.from(selectedItems)) : '';
+        }
+
+        // Select/Deselect All buttons
+        document.getElementById('selectAllBtn').addEventListener('click', function () {
+            if (!playlistData) return;
+
+            document.querySelectorAll('.playlist-item-checkbox').forEach(checkbox => {
+                checkbox.checked = true;
+                checkbox.closest('.playlist-item').classList.add('selected');
+            });
+
+            selectedItems = new Set(playlistData.items.map(item => item.url));
+            updatePlaylistCounts();
+            updateDownloadButton();
+        });
+
+        document.getElementById('selectNoneBtn').addEventListener('click', function () {
+            document.querySelectorAll('.playlist-item-checkbox').forEach(checkbox => {
+                checkbox.checked = false;
+                checkbox.closest('.playlist-item').classList.remove('selected');
+            });
+
+            selectedItems.clear();
+            updatePlaylistCounts();
+            updateDownloadButton();
+        });
+
+        // Close playlist selector
+        document.getElementById('closePlaylistBtn').addEventListener('click', function () {
+            document.getElementById('playlistContainer').style.display = 'none';
+            playlistData = null;
+            selectedItems.clear();
+            updateDownloadButton();
+        });
+
+        // ============================================
+        // Download Form
+        // ============================================
+        document.getElementById('downloadForm').addEventListener('submit', function (event) {
+            event.preventDefault();
+
+            const downloadBtn = document.getElementById('downloadBtn');
+            const downloadingBtn = document.getElementById('downloadingBtn');
+            const progressContainer = document.getElementById('progressContainer');
+            const progressBar = document.getElementById('progressBar');
+            const progressStatus = document.getElementById('progressStatus');
+            const progressPercentage = document.getElementById('progressPercentage');
+            const progressDetail = document.getElementById('progressDetail');
+
+            const inputURL = document.getElementById('inputURL').value.trim();
+            const isPlaylistMode = document.getElementById('isPlaylistModeInput').value === 'true';
+
+            if (!inputURL && !isPlaylistMode) {
+                showToast('Por favor, ingresa una URL o nombre de canción', 'warning');
+                return;
+            }
+
+            if (isPlaylistMode && selectedItems.size === 0) {
+                showToast('Selecciona al menos un elemento de la playlist', 'warning');
+                return;
+            }
+
+            // Actualizar configuración antes de enviar
+            const currentConfig = getCurrentFormConfig();
+            document.getElementById('userConfigInput').value = JSON.stringify(currentConfig);
+
+            downloadBtn.style.display = 'none';
+            downloadingBtn.style.display = 'block';
+            progressContainer.style.display = 'block';
+
+            const progressSteps = [
+                { percent: 5, status: 'Iniciando...', detail: 'Conectando con el servidor' },
+                { percent: 15, status: 'Buscando...', detail: 'Analizando URL o término de búsqueda' },
+                { percent: 25, status: 'Encontrado', detail: 'Preparando descarga' },
+                { percent: 40, status: 'Descargando...', detail: 'Obteniendo stream de audio' },
+                { percent: 55, status: 'Descargando...', detail: 'Obteniendo stream de video' },
+                { percent: 70, status: 'Procesando...', detail: 'Convirtiendo formato' },
+                { percent: 85, status: 'Finalizando...', detail: 'Agregando metadata' },
+                { percent: 95, status: 'Casi listo...', detail: 'Preparando archivo' }
+            ];
+
+            let currentStep = 0;
+            const startTime = Date.now();
+
+            function updateProgress(percent, status, detail) {
+                progressBar.style.width = percent + '%';
+                progressPercentage.textContent = percent + '%';
+                progressStatus.textContent = status;
+                progressDetail.textContent = detail || '';
+            }
+
+            updateProgress(2, 'Iniciando...', 'Enviando solicitud');
+
+            const progressInterval = setInterval(() => {
+                const elapsed = (Date.now() - startTime) / 1000;
+                let target = Math.min(Math.floor(elapsed / 3), progressSteps.length - 1);
+
+                if (currentStep < target) {
+                    currentStep = target;
+                    const step = progressSteps[currentStep];
+                    updateProgress(step.percent, step.status, step.detail);
+                }
+            }, 500);
+
+            const formData = new FormData(event.target);
+
+            fetch('{{ url_for("descargar") }}', { method: 'POST', body: formData })
+                .then(async response => {
+                    clearInterval(progressInterval);
+
+                    if (!response.ok) {
+                        // Intentar obtener mensaje de error del servidor
+                        let errorMsg = 'No se pudo completar la descarga';
+                        try {
+                            const errorData = await response.json();
+                            if (errorData.error) {
+                                errorMsg = errorData.error;
+                            }
+                        } catch (e) {
+                            // No es JSON, usar mensaje genérico
+                        }
+                        updateProgress(100, 'Error', errorMsg);
+                        progressBar.classList.replace('bg-primary', 'bg-danger');
+                        throw new Error(errorMsg);
+                    }
+
+                    updateProgress(100, '¡Completado!', 'Guardando archivo...');
+                    progressBar.classList.remove('progress-bar-animated');
+                    progressBar.classList.replace('bg-primary', 'bg-success');
+
+                    const disposition = response.headers.get('Content-Disposition');
+                    let filename = 'descarga.mp3';
+
+                    if (disposition && disposition.includes('filename=')) {
+                        filename = disposition.split('filename=')[1].split(';')[0].trim().replace(/"/g, '');
+                        if (filename.includes('\\')) filename = filename.substring(filename.lastIndexOf('\\') + 1);
+                        if (filename.includes('/')) filename = filename.substring(filename.lastIndexOf('/') + 1);
+                    }
+
+                    return response.blob().then(blob => ({ blob, filename }));
+                })
+                .then(({ blob, filename }) => {
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                    a.remove();
+
+                    showToast('Descarga completada: ' + filename, 'success');
+
+                    // Limpiar el input URL después de descarga exitosa
+                    document.getElementById('inputURL').value = '';
+                    hideMediaPreview();
+
+                    // Close playlist selector after successful download
+                    if (playlistData) {
+                        document.getElementById('playlistContainer').style.display = 'none';
+                        playlistData = null;
+                        selectedItems.clear();
+                        updateDownloadButton();
+                    }
+                })
+                .catch(error => {
+                    clearInterval(progressInterval);
+                    progressBar.classList.remove('progress-bar-animated');
+                    progressBar.classList.replace('bg-primary', 'bg-danger');
+                    const errorMsg = error.message || 'Error en la descarga. Intenta de nuevo.';
+                    showToast(errorMsg, 'danger');
+                    console.error('Error de descarga:', error);
+                })
+                .finally(() => {
+                    setTimeout(() => {
+                        downloadBtn.style.display = 'block';
+                        downloadingBtn.style.display = 'none';
+                        progressContainer.style.display = 'none';
+                        progressBar.style.width = '0%';
+                        progressBar.classList.remove('bg-success', 'bg-danger');
+                        progressBar.classList.add('bg-primary', 'progress-bar-animated');
+                    }, 3000);
+                });
+        });
+    </script>
+
+    <!-- Offcanvas Sidebar para Configuración -->
+    <div class="offcanvas offcanvas-end offcanvas-config" tabindex="-1" id="configSidebar" aria-labelledby="configSidebarLabel">
+        <div class="offcanvas-header">
+            <h5 class="offcanvas-title" id="configSidebarLabel">
+                <i class="fa-solid fa-gear text-primary me-2"></i>
+                Configuración de Descargas
+            </h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas" aria-label="Cerrar"></button>
+        </div>
+        <div class="offcanvas-body">
+            <form id="configForm">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" required />
+
+                <!-- Calidad de Audio/Video -->
+                <div class="config-section">
+                    <div class="config-section-title">
+                        <i class="fa-solid fa-sliders text-info"></i>
+                        <span>Calidad de Audio/Video</span>
+                    </div>
+                    <p class="config-section-description">
+                        Selecciona la calidad de descarga.
+                    </p>
+                    <div class="option-grid">
+                        <label class="option-card" data-config="Calidad_audio_video" data-value="min">
+                            <div class="form-check mb-0">
+                                <input class="form-check-input" type="radio" name="Calidad_audio_video"
+                                       id="qualityMin" value="min">
+                                <span class="form-check-label">
+                                    <i class="fa-solid fa-gauge-low text-success me-1"></i>
+                                    <strong>Mínima</strong>
+                                    <small class="d-block text-muted">64 kbps</small>
+                                </span>
+                            </div>
+                        </label>
+                        <label class="option-card" data-config="Calidad_audio_video" data-value="avg">
+                            <div class="form-check mb-0">
+                                <input class="form-check-input" type="radio" name="Calidad_audio_video"
+                                       id="qualityAvg" value="avg">
+                                <span class="form-check-label">
+                                    <i class="fa-solid fa-gauge text-warning me-1"></i>
+                                    <strong>Promedio</strong>
+                                    <small class="d-block text-muted">128 kbps</small>
+                                </span>
+                            </div>
+                        </label>
+                        <label class="option-card" data-config="Calidad_audio_video" data-value="max">
+                            <div class="form-check mb-0">
+                                <input class="form-check-input" type="radio" name="Calidad_audio_video"
+                                       id="qualityMax" value="max">
+                                <span class="form-check-label">
+                                    <i class="fa-solid fa-gauge-high text-danger me-1"></i>
+                                    <strong>Máxima</strong>
+                                    <small class="d-block text-muted">320 kbps</small>
+                                </span>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Formato de Audio -->
+                <div class="config-section">
+                    <div class="config-section-title">
+                        <i class="fa-solid fa-file-audio text-success"></i>
+                        <span>Formato de Audio</span>
+                    </div>
+                    <div class="option-grid">
+                        <label class="option-card" data-config="Formato_audio" data-value="mp3">
+                            <div class="form-check mb-0">
+                                <input class="form-check-input" type="radio" name="Formato_audio"
+                                       id="formato_mp3" value="mp3">
+                                <span class="form-check-label">
+                                    <strong>MP3</strong>
+                                </span>
+                            </div>
+                        </label>
+                        <label class="option-card" data-config="Formato_audio" data-value="m4a">
+                            <div class="form-check mb-0">
+                                <input class="form-check-input" type="radio" name="Formato_audio"
+                                       id="formato_m4a" value="m4a">
+                                <span class="form-check-label">
+                                    <strong>M4A</strong>
+                                </span>
+                            </div>
+                        </label>
+                        <label class="option-card" data-config="Formato_audio" data-value="flac">
+                            <div class="form-check mb-0">
+                                <input class="form-check-input" type="radio" name="Formato_audio"
+                                       id="formato_flac" value="flac">
+                                <span class="form-check-label">
+                                    <strong>FLAC</strong>
+                                </span>
+                            </div>
+                        </label>
+                        <label class="option-card" data-config="Formato_audio" data-value="wav">
+                            <div class="form-check mb-0">
+                                <input class="form-check-input" type="radio" name="Formato_audio"
+                                       id="formato_wav" value="wav">
+                                <span class="form-check-label">
+                                    <strong>WAV</strong>
+                                </span>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Formato de Video -->
+                <div class="config-section">
+                    <div class="config-section-title">
+                        <i class="fa-solid fa-file-video text-danger"></i>
+                        <span>Formato de Video</span>
+                    </div>
+                    <div class="option-grid">
+                        <label class="option-card" data-config="Formato_video" data-value="mp4">
+                            <div class="form-check mb-0">
+                                <input class="form-check-input" type="radio" name="Formato_video"
+                                       id="formato_mp4" value="mp4">
+                                <span class="form-check-label">
+                                    <strong>MP4</strong>
+                                </span>
+                            </div>
+                        </label>
+                        <label class="option-card" data-config="Formato_video" data-value="mov">
+                            <div class="form-check mb-0">
+                                <input class="form-check-input" type="radio" name="Formato_video"
+                                       id="formato_mov" value="mov">
+                                <span class="form-check-label">
+                                    <strong>MOV</strong>
+                                </span>
+                            </div>
+                        </label>
+                        <label class="option-card" data-config="Formato_video" data-value="avi">
+                            <div class="form-check mb-0">
+                                <input class="form-check-input" type="radio" name="Formato_video"
+                                       id="formato_avi" value="avi">
+                                <span class="form-check-label">
+                                    <strong>AVI</strong>
+                                </span>
+                            </div>
+                        </label>
+                        <label class="option-card" data-config="Formato_video" data-value="flv">
+                            <div class="form-check mb-0">
+                                <input class="form-check-input" type="radio" name="Formato_video"
+                                       id="formato_flv" value="flv">
+                                <span class="form-check-label">
+                                    <strong>FLV</strong>
+                                </span>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Opciones de Descarga -->
+                <div class="config-section">
+                    <div class="config-section-title">
+                        <i class="fa-solid fa-toggle-on text-warning"></i>
+                        <span>Opciones de Descarga</span>
+                    </div>
+                    <div class="row g-2">
+                        <div class="col-6">
+                            <label class="option-card w-100" data-config="Descargar_audio" data-value="true">
+                                <div class="form-check mb-0">
+                                    <input class="form-check-input" type="checkbox" name="Descargar_audio"
+                                           id="downloadAudio">
+                                    <span class="form-check-label">
+                                        <i class="fa-solid fa-music text-primary me-1"></i>
+                                        <strong>Audio</strong>
+                                    </span>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="col-6">
+                            <label class="option-card w-100" data-config="Descargar_video" data-value="true">
+                                <div class="form-check mb-0">
+                                    <input class="form-check-input" type="checkbox" name="Descargar_video"
+                                           id="downloadVideo">
+                                    <span class="form-check-label">
+                                        <i class="fa-solid fa-video text-danger me-1"></i>
+                                        <strong>Video</strong>
+                                    </span>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="col-12">
+                            <label class="option-card w-100" data-config="Scrappear_metadata" data-value="true">
+                                <div class="form-check mb-0">
+                                    <input class="form-check-input" type="checkbox" name="Scrappear_metadata"
+                                           id="scrapeMetadata">
+                                    <span class="form-check-label">
+                                        <i class="fa-solid fa-tags text-info me-1"></i>
+                                        <strong>Agregar Metadata</strong>
+                                        <small class="d-block text-muted">Título, artista, carátula</small>
+                                    </span>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- YouTube Music -->
+                <div class="config-section">
+                    <div class="config-section-title">
+                        <i class="fa-brands fa-youtube text-danger"></i>
+                        <span>YouTube Music</span>
+                        <span class="feature-badge new">Nuevo</span>
+                    </div>
+                    <label class="option-card w-100" data-config="Preferir_YouTube_Music" data-value="true">
+                        <div class="form-check mb-0">
+                            <input class="form-check-input" type="checkbox" name="Preferir_YouTube_Music"
+                                   id="preferirYouTubeMusic">
+                            <span class="form-check-label">
+                                <i class="fa-solid fa-wand-magic-sparkles text-info me-1"></i>
+                                <strong>Preferir audio de YouTube Music</strong>
+                                <small class="d-block text-muted">
+                                    Audio puro sin contenido extra de videos.
+                                </small>
+                            </span>
+                        </div>
+                    </label>
+                </div>
+
+                <!-- SponsorBlock -->
+                <div class="config-section">
+                    <div class="config-section-title">
+                        <i class="fa-solid fa-scissors text-warning"></i>
+                        <span>SponsorBlock</span>
+                        <span class="feature-badge beta">Beta</span>
+                    </div>
+                    <label class="option-card w-100 mb-2" data-config="SponsorBlock_enabled" data-value="true">
+                        <div class="form-check mb-0">
+                            <input class="form-check-input" type="checkbox" name="SponsorBlock_enabled"
+                                   id="sponsorblockEnabled"
+                                   onclick="toggleSponsorBlockCategories()">
+                            <span class="form-check-label">
+                                <i class="fa-solid fa-power-off me-1"></i>
+                                <strong>Habilitar SponsorBlock</strong>
+                            </span>
+                        </div>
+                    </label>
+
+                    <div id="sponsorblockCategories" class="mt-2" style="display: none;">
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <label class="option-card w-100">
+                                    <div class="form-check mb-0">
+                                        <input class="form-check-input sponsorblock-category" type="checkbox" name="SponsorBlock_categories"
+                                               value="sponsor" id="sb_sponsor">
+                                        <span class="form-check-label">
+                                            <i class="fa-solid fa-ad text-danger me-1"></i>
+                                            <strong>Sponsors</strong>
+                                        </span>
+                                    </div>
+                                </label>
+                            </div>
+                            <div class="col-6">
+                                <label class="option-card w-100">
+                                    <div class="form-check mb-0">
+                                        <input class="form-check-input sponsorblock-category" type="checkbox" name="SponsorBlock_categories"
+                                               value="intro" id="sb_intro">
+                                        <span class="form-check-label">
+                                            <i class="fa-solid fa-play text-info me-1"></i>
+                                            <strong>Intros</strong>
+                                        </span>
+                                    </div>
+                                </label>
+                            </div>
+                            <div class="col-6">
+                                <label class="option-card w-100">
+                                    <div class="form-check mb-0">
+                                        <input class="form-check-input sponsorblock-category" type="checkbox" name="SponsorBlock_categories"
+                                               value="outro" id="sb_outro">
+                                        <span class="form-check-label">
+                                            <i class="fa-solid fa-stop text-secondary me-1"></i>
+                                            <strong>Outros</strong>
+                                        </span>
+                                    </div>
+                                </label>
+                            </div>
+                            <div class="col-6">
+                                <label class="option-card w-100">
+                                    <div class="form-check mb-0">
+                                        <input class="form-check-input sponsorblock-category" type="checkbox" name="SponsorBlock_categories"
+                                               value="selfpromo" id="sb_selfpromo">
+                                        <span class="form-check-label">
+                                            <i class="fa-solid fa-bullhorn text-warning me-1"></i>
+                                            <strong>Auto-promo</strong>
+                                        </span>
+                                    </div>
+                                </label>
+                            </div>
+                            <div class="col-6">
+                                <label class="option-card w-100">
+                                    <div class="form-check mb-0">
+                                        <input class="form-check-input sponsorblock-category" type="checkbox" name="SponsorBlock_categories"
+                                               value="interaction" id="sb_interaction">
+                                        <span class="form-check-label">
+                                            <i class="fa-solid fa-thumbs-up text-success me-1"></i>
+                                            <strong>Interacción</strong>
+                                        </span>
+                                    </div>
+                                </label>
+                            </div>
+                            <div class="col-6">
+                                <label class="option-card w-100">
+                                    <div class="form-check mb-0">
+                                        <input class="form-check-input sponsorblock-category" type="checkbox" name="SponsorBlock_categories"
+                                               value="music_offtopic" id="sb_music_offtopic">
+                                        <span class="form-check-label">
+                                            <i class="fa-solid fa-comment-slash text-danger me-1"></i>
+                                            <strong>No música</strong>
+                                        </span>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Botón Guardar -->
+                <button type="button" id="saveConfigBtn" class="btn btn-primary w-100 py-2 mt-3">
+                    <i class="fa-solid fa-save me-2"></i>
+                    Guardar Configuración
+                </button>
+            </form>
+        </div>
+    </div>
+</body>
+{% endblock %}

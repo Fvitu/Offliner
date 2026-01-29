@@ -1,0 +1,18 @@
+# Web Framework
+Flask>=3.0.0
+Flask-WTF>=1.2.1
+Flask-Limiter>=3.5.0
+Werkzeug>=3.0.1
+
+# HTTP & Networking
+requests>=2.32.3
+
+# Music & Video
+spotipy>=2.23.0
+mutagen>=1.47.0
+youtube-search-python>=1.6.6
+yt_dlp>=2024.0.0
+ytmusicapi>=1.0.0
+
+# Utilities
+python-dotenv>=1.0.0
