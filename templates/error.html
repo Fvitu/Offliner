@@ -42,7 +42,7 @@
 			<div class="error-icon">
 				<i class="fa-solid fa-triangle-exclamation"></i>
 			</div>
-			<h1 class="error-title">¡Ups! Algo salió mal</h1>
+			<h1 class="error-title">Oops! Something went wrong</h1>
 
 			{% with messages = get_flashed_messages() %}
 			{% if messages %}
@@ -55,17 +55,17 @@
 			{% endfor %}
 			{% else %}
 			<p class="error-message">
-				Ha ocurrido un error inesperado. Por favor, intenta de nuevo más tarde o contacta con el soporte si el problema persiste.
+				An unexpected error occurred. Please try again later or contact support if the problem persists.
 			</p>
 			{% endif %}
 			{% endwith %}
 
 			<div class="d-flex gap-3">
 				<a href="{{ url_for('dashboard') }}" class="btn btn-primary">
-					<i class="fa-solid fa-home me-2"></i>Ir al Dashboard
+					<i class="fa-solid fa-home me-2"></i>Go to Dashboard
 				</a>
 				<a href="javascript:history.back()" class="btn btn-outline-secondary">
-					<i class="fa-solid fa-arrow-left me-2"></i>Volver atrás
+					<i class="fa-solid fa-arrow-left me-2"></i>Go Back
 				</a>
 			</div>
 		</div>

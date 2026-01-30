@@ -424,7 +424,7 @@
                     <button class="btn btn-config-trigger" type="button" data-bs-toggle="offcanvas"
                             data-bs-target="#configSidebar" aria-controls="configSidebar">
                         <i class="fa-solid fa-gear me-2"></i>
-                        Configurar descarga
+                        Download Settings
                     </button>
                 </div>
             </div>
@@ -434,13 +434,13 @@
     <div class="container mt-5">
         <h1 class="text-center mb-4">
             <img src="https://em-content.zobj.net/source/animated-noto-color-emoji/356/waving-hand_1f44b.gif"
-                 alt="Mano saludando" width="45px" />
+                 alt="Waving hand" width="45px" />
             Music Downloader
         </h1>
 
         <p class="text-center text-muted mb-5">
-            Descarga fácilmente vídeos y audios de YouTube y Spotify. Tu configuración se guarda localmente en tu navegador.
-            <br><small class="text-success"><i class="fa-solid fa-lock me-1"></i>No almacenamos ningún dato tuyo - tu privacidad es importante.</small>
+            Easily download videos and audio from YouTube and Spotify. Your settings are saved locally in your browser.
+            <br><small class="text-success"><i class="fa-solid fa-lock me-1"></i>We do not store any of your data - your privacy is important.</small>
         </p>
 
         <div class="row justify-content-center">
@@ -450,12 +450,12 @@
                     <div class="card-header bg-transparent border-primary">
                         <h5 class="mb-0">
                             <i class="fa-solid fa-cloud-arrow-down text-primary me-2"></i>
-                            Descargar Canciones y Videos
+                            Download Songs and Videos
                         </h5>
                     </div>
                     <div class="card-body">
                         <p class="text-muted mb-4">
-                            Ingresa una URL de YouTube/Spotify o el nombre de una canción para comenzar la descarga.
+                            Enter a YouTube/Spotify URL or a song name to start downloading.
                         </p>
 
                         <form id="downloadForm" method="POST" action="#">
@@ -471,12 +471,12 @@
                                     </span>
                                     <input type="text" class="form-control bg-dark border-secondary text-light"
                                            id="inputURL" name="inputURL"
-                                           placeholder="URL o nombre de la canción..."
+                                           placeholder="URL or song name..."
                                            autocomplete="off">
                                 </div>
                                 <small class="text-muted mt-1 d-block">
                                     <i class="fa-solid fa-lightbulb text-warning me-1"></i>
-                                    Se detecta automáticamente la plataforma y tipo de contenido (canción o playlist).
+                                    Platform and content type (song or playlist) are automatically detected.
                                 </small>
                             </div>
 
@@ -484,7 +484,7 @@
                             <div id="mediaPreview" class="media-preview">
                                 <div id="mediaPreviewLoading" class="media-preview-loading" style="display: none;">
                                     <span class="spinner-border spinner-border-sm me-2"></span>
-                                    Obteniendo información...
+                                    Getting info...
                                 </div>
                                 <div id="mediaPreviewContent" class="media-preview-content">
                                     <img id="mediaThumbnail" src="" alt="Thumbnail" class="media-preview-thumbnail">
@@ -494,10 +494,10 @@
                                                 <i class="fa-brands fa-youtube"></i> YouTube
                                             </span>
                                         </div>
-                                        <div id="mediaTitle" class="media-preview-title">Título del video</div>
+                                        <div id="mediaTitle" class="media-preview-title">Video Title</div>
                                         <div class="media-preview-meta">
                                             <i class="fa-solid fa-user me-1"></i>
-                                            <span id="mediaAuthor">Autor</span>
+                                            <span id="mediaAuthor">Author</span>
                                             <span class="mx-2">•</span>
                                             <i class="fa-solid fa-clock me-1"></i>
                                             <span id="mediaDuration">0:00</span>
@@ -515,16 +515,16 @@
                                     <div class="playlist-info">
                                         <img id="playlistThumbnail" src="" alt="Playlist" class="playlist-thumbnail" style="display: none;">
                                         <div>
-                                            <h6 id="playlistTitle" class="mb-1">Cargando playlist...</h6>
+                                            <h6 id="playlistTitle" class="mb-1">Loading playlist...</h6>
                                             <small id="playlistMeta" class="text-muted"></small>
                                         </div>
                                     </div>
                                     <div class="playlist-actions">
                                         <button type="button" class="btn btn-sm btn-outline-success" id="selectAllBtn">
-                                            <i class="fa-solid fa-check-double me-1"></i> Seleccionar Todo
+                                            <i class="fa-solid fa-check-double me-1"></i> Select All
                                         </button>
                                         <button type="button" class="btn btn-sm btn-outline-secondary" id="selectNoneBtn">
-                                            <i class="fa-solid fa-xmark me-1"></i> Deseleccionar Todo
+                                            <i class="fa-solid fa-xmark me-1"></i> Deselect All
                                         </button>
                                         <button type="button" class="btn btn-sm btn-outline-danger" id="closePlaylistBtn">
                                             <i class="fa-solid fa-times"></i>
@@ -550,11 +550,11 @@
                                 <div class="d-flex justify-content-between align-items-center mt-3 pt-3 border-top border-secondary">
                                     <span class="text-muted">
                                         <i class="fa-solid fa-check-circle text-success me-1"></i>
-                                        <span id="selectedCount">0</span> de <span id="totalCount">0</span> seleccionados
+                                        <span id="selectedCount">0</span> of <span id="totalCount">0</span> selected
                                     </span>
                                     <span class="text-muted small">
                                         <i class="fa-solid fa-clock me-1"></i>
-                                        Duración total: <span id="totalDuration">00:00</span>
+                                        Total duration: <span id="totalDuration">00:00</span>
                                     </span>
                                 </div>
                             </div>
@@ -562,7 +562,7 @@
                             <!-- Barra de progreso -->
                             <div id="progressContainer" class="mb-3" style="display: none;">
                                 <div class="d-flex justify-content-between mb-1">
-                                    <span id="progressStatus" class="text-light small">Iniciando descarga...</span>
+                                    <span id="progressStatus" class="text-light small">Starting download...</span>
                                     <span id="progressPercentage" class="text-light small">0%</span>
                                 </div>
                                 <div class="progress" style="height: 8px; border-radius: 4px;">
@@ -575,11 +575,11 @@
 
                             <button id="downloadBtn" type="submit" class="btn btn-primary btn-lg w-100">
                                 <i class="fa-solid fa-download me-2"></i>
-                                <span id="downloadBtnText">Iniciar Descarga</span>
+                                <span id="downloadBtnText">Start Download</span>
                             </button>
                             <button id="downloadingBtn" type="button" class="btn btn-secondary btn-lg w-100" style="display: none" disabled>
                                 <span class="spinner-border spinner-border-sm me-2"></span>
-                                Procesando...
+                                Processing...
                             </button>
                         </form>
                     </div>
@@ -588,7 +588,7 @@
                 <!-- Footer -->
                 <footer class="text-center mt-5 mb-4">
                     <span class="text-muted">
-                        Creado con <i class="fa-solid fa-heart text-danger"></i> por
+                        Created with <i class="fa-solid fa-heart text-danger"></i> by
                         <span class="text-light">Fede Vitu</span> &copy; 2024
                     </span>
                 </footer>
@@ -615,7 +615,7 @@
                     return { ...DEFAULT_CONFIG, ...parsed };
                 }
             } catch (e) {
-                console.error('Error leyendo configuración:', e);
+                console.error('Error reading config:', e);
             }
             return { ...DEFAULT_CONFIG };
         }
@@ -625,7 +625,7 @@
                 localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
                 return true;
             } catch (e) {
-                console.error('Error guardando configuración:', e);
+                console.error('Error saving config:', e);
                 return false;
             }
         }
@@ -741,8 +741,8 @@
 
             // Actualizar información
             document.getElementById('mediaThumbnail').src = info.thumbnail || 'https://via.placeholder.com/120x90?text=No+Image';
-            document.getElementById('mediaTitle').textContent = info.titulo || 'Sin título';
-            document.getElementById('mediaAuthor').textContent = info.autor || 'Desconocido';
+            document.getElementById('mediaTitle').textContent = info.titulo || 'Untitled';
+            document.getElementById('mediaAuthor').textContent = info.autor || 'Unknown';
             document.getElementById('mediaDuration').textContent = info.duracion || '0:00';
 
             // Actualizar badge de fuente
@@ -878,14 +878,14 @@
                 const originalContent = btn.innerHTML;
 
                 // Show loading state
-                btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Guardando...';
+                btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Saving...';
                 btn.disabled = true;
 
                 const config = getCurrentFormConfig();
 
                 setTimeout(() => {
                     if (saveConfig(config)) {
-                        showToast('¡Configuración guardada en tu navegador!', 'success');
+                        showToast('Settings saved to your browser!', 'success');
                         // Actualizar el input hidden
                         document.getElementById('userConfigInput').value = JSON.stringify(config);
 
@@ -898,7 +898,7 @@
                         }
                         offcanvasInstance.hide();
                     } else {
-                        showToast('Error al guardar la configuración', 'danger');
+                        showToast('Error saving settings', 'danger');
                     }
 
                     // Restore button
@@ -1065,8 +1065,8 @@
             container.style.display = 'block';
             loading.style.display = 'block';
             itemsContainer.style.display = 'none';
-            document.getElementById('playlistTitle').textContent = 'Cargando playlist...';
-            document.getElementById('playlistMeta').textContent = 'Obteniendo información...';
+            document.getElementById('playlistTitle').textContent = 'Loading playlist...';
+            document.getElementById('playlistMeta').textContent = 'Getting info...';
             document.getElementById('playlistThumbnail').style.display = 'none';
 
             try {
@@ -1085,15 +1085,15 @@
                     showPlaylistSelector(data.playlist);
                 } else if (data.es_playlist === false) {
                     container.style.display = 'none';
-                    showToast('Esta URL no es una playlist. Puedes descargarla directamente.', 'info');
+                    showToast('This URL is not a playlist. You can download it directly.', 'info');
                 } else {
                     container.style.display = 'none';
-                    showToast(data.error || 'No se pudo obtener la playlist', 'danger');
+                    showToast(data.error || 'Could not get playlist', 'danger');
                 }
             } catch (error) {
                 console.error('Error:', error);
                 container.style.display = 'none';
-                showToast('Error al verificar la playlist', 'danger');
+                showToast('Error checking playlist', 'danger');
             }
         }
 
@@ -1208,9 +1208,9 @@
             const isPlaylistMode = playlistData !== null && selectedItems.size > 0;
 
             if (isPlaylistMode) {
-                btn.textContent = `Descargar ${selectedItems.size} elemento(s)`;
+                btn.textContent = `Download ${selectedItems.size} item(s)`;
             } else {
-                btn.textContent = 'Iniciar Descarga';
+                btn.textContent = 'Start Download';
             }
 
             document.getElementById('isPlaylistModeInput').value = isPlaylistMode ? 'true' : 'false';
@@ -1269,12 +1269,12 @@
             const isPlaylistMode = document.getElementById('isPlaylistModeInput').value === 'true';
 
             if (!inputURL && !isPlaylistMode) {
-                showToast('Por favor, ingresa una URL o nombre de canción', 'warning');
+                showToast('Please enter a URL or song name', 'warning');
                 return;
             }
 
             if (isPlaylistMode && selectedItems.size === 0) {
-                showToast('Selecciona al menos un elemento de la playlist', 'warning');
+                showToast('Select at least one playlist item', 'warning');
                 return;
             }
 
@@ -1287,14 +1287,14 @@
             progressContainer.style.display = 'block';
 
             const progressSteps = [
-                { percent: 5, status: 'Iniciando...', detail: 'Conectando con el servidor' },
-                { percent: 15, status: 'Buscando...', detail: 'Analizando URL o término de búsqueda' },
-                { percent: 25, status: 'Encontrado', detail: 'Preparando descarga' },
-                { percent: 40, status: 'Descargando...', detail: 'Obteniendo stream de audio' },
-                { percent: 55, status: 'Descargando...', detail: 'Obteniendo stream de video' },
-                { percent: 70, status: 'Procesando...', detail: 'Convirtiendo formato' },
-                { percent: 85, status: 'Finalizando...', detail: 'Agregando metadata' },
-                { percent: 95, status: 'Casi listo...', detail: 'Preparando archivo' }
+                { percent: 5, status: 'Starting...', detail: 'Connecting to server' },
+                { percent: 15, status: 'Searching...', detail: 'Analyzing URL or search term' },
+                { percent: 25, status: 'Found', detail: 'Preparing download' },
+                { percent: 40, status: 'Downloading...', detail: 'Getting audio stream' },
+                { percent: 55, status: 'Downloading...', detail: 'Getting video stream' },
+                { percent: 70, status: 'Processing...', detail: 'Converting format' },
+                { percent: 85, status: 'Finishing...', detail: 'Adding metadata' },
+                { percent: 95, status: 'Almost done...', detail: 'Preparing file' }
             ];
 
             let currentStep = 0;
@@ -1307,7 +1307,7 @@
                 progressDetail.textContent = detail || '';
             }
 
-            updateProgress(2, 'Iniciando...', 'Enviando solicitud');
+            updateProgress(2, 'Starting...', 'Sending request');
 
             const progressInterval = setInterval(() => {
                 const elapsed = (Date.now() - startTime) / 1000;
@@ -1328,7 +1328,7 @@
 
                     if (!response.ok) {
                         // Intentar obtener mensaje de error del servidor
-                        let errorMsg = 'No se pudo completar la descarga';
+                        let errorMsg = 'Could not complete download';
                         try {
                             const errorData = await response.json();
                             if (errorData.error) {
@@ -1342,7 +1342,7 @@
                         throw new Error(errorMsg);
                     }
 
-                    updateProgress(100, '¡Completado!', 'Guardando archivo...');
+                    updateProgress(100, 'Completed!', 'Saving file...');
                     progressBar.classList.remove('progress-bar-animated');
                     progressBar.classList.replace('bg-primary', 'bg-success');
 
@@ -1367,7 +1367,7 @@
                     window.URL.revokeObjectURL(url);
                     a.remove();
 
-                    showToast('Descarga completada: ' + filename, 'success');
+                    showToast('Download completed: ' + filename, 'success');
 
                     // Limpiar el input URL después de descarga exitosa
                     document.getElementById('inputURL').value = '';
@@ -1385,9 +1385,9 @@
                     clearInterval(progressInterval);
                     progressBar.classList.remove('progress-bar-animated');
                     progressBar.classList.replace('bg-primary', 'bg-danger');
-                    const errorMsg = error.message || 'Error en la descarga. Intenta de nuevo.';
+                    const errorMsg = error.message || 'Download error. Please try again.';
                     showToast(errorMsg, 'danger');
-                    console.error('Error de descarga:', error);
+                    console.error('Download error:', error);
                 })
                 .finally(() => {
                     setTimeout(() => {
@@ -1407,9 +1407,9 @@
         <div class="offcanvas-header">
             <h5 class="offcanvas-title" id="configSidebarLabel">
                 <i class="fa-solid fa-gear text-primary me-2"></i>
-                Configuración de Descargas
+                Download Settings
             </h5>
-            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas" aria-label="Cerrar"></button>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas" aria-label="Close"></button>
         </div>
         <div class="offcanvas-body">
             <form id="configForm">
@@ -1419,10 +1419,10 @@
                 <div class="config-section">
                     <div class="config-section-title">
                         <i class="fa-solid fa-sliders text-info"></i>
-                        <span>Calidad de Audio/Video</span>
+                        <span>Audio/Video Quality</span>
                     </div>
                     <p class="config-section-description">
-                        Selecciona la calidad de descarga.
+                        Select download quality.
                     </p>
                     <div class="option-grid">
                         <label class="option-card" data-config="Calidad_audio_video" data-value="min">
@@ -1431,7 +1431,7 @@
                                        id="qualityMin" value="min">
                                 <span class="form-check-label">
                                     <i class="fa-solid fa-gauge-low text-success me-1"></i>
-                                    <strong>Mínima</strong>
+                                    <strong>Minimum</strong>
                                     <small class="d-block text-muted">64 kbps</small>
                                 </span>
                             </div>
@@ -1442,7 +1442,7 @@
                                        id="qualityAvg" value="avg">
                                 <span class="form-check-label">
                                     <i class="fa-solid fa-gauge text-warning me-1"></i>
-                                    <strong>Promedio</strong>
+                                    <strong>Average</strong>
                                     <small class="d-block text-muted">128 kbps</small>
                                 </span>
                             </div>
@@ -1453,7 +1453,7 @@
                                        id="qualityMax" value="max">
                                 <span class="form-check-label">
                                     <i class="fa-solid fa-gauge-high text-danger me-1"></i>
-                                    <strong>Máxima</strong>
+                                    <strong>Maximum</strong>
                                     <small class="d-block text-muted">320 kbps</small>
                                 </span>
                             </div>
@@ -1465,7 +1465,7 @@
                 <div class="config-section">
                     <div class="config-section-title">
                         <i class="fa-solid fa-file-audio text-success"></i>
-                        <span>Formato de Audio</span>
+                        <span>Audio Format</span>
                     </div>
                     <div class="option-grid">
                         <label class="option-card" data-config="Formato_audio" data-value="mp3">
@@ -1507,11 +1507,11 @@
                     </div>
                 </div>
 
-                <!-- Formato de Video -->
+                <!-- Video Format -->
                 <div class="config-section">
                     <div class="config-section-title">
                         <i class="fa-solid fa-file-video text-danger"></i>
-                        <span>Formato de Video</span>
+                        <span>Video Format</span>
                     </div>
                     <div class="option-grid">
                         <label class="option-card" data-config="Formato_video" data-value="mp4">
@@ -1553,11 +1553,11 @@
                     </div>
                 </div>
 
-                <!-- Opciones de Descarga -->
+                <!-- Download Options -->
                 <div class="config-section">
                     <div class="config-section-title">
                         <i class="fa-solid fa-toggle-on text-warning"></i>
-                        <span>Opciones de Descarga</span>
+                        <span>Download Options</span>
                     </div>
                     <div class="row g-2">
                         <div class="col-6">
@@ -1591,8 +1591,8 @@
                                            id="scrapeMetadata">
                                     <span class="form-check-label">
                                         <i class="fa-solid fa-tags text-info me-1"></i>
-                                        <strong>Agregar Metadata</strong>
-                                        <small class="d-block text-muted">Título, artista, carátula</small>
+                                        <strong>Add Metadata</strong>
+                                        <small class="d-block text-muted">Title, artist, cover art</small>
                                     </span>
                                 </div>
                             </label>
@@ -1605,7 +1605,7 @@
                     <div class="config-section-title">
                         <i class="fa-brands fa-youtube text-danger"></i>
                         <span>YouTube Music</span>
-                        <span class="feature-badge new">Nuevo</span>
+                        <span class="feature-badge new">New</span>
                     </div>
                     <label class="option-card w-100" data-config="Preferir_YouTube_Music" data-value="true">
                         <div class="form-check mb-0">
@@ -1613,9 +1613,9 @@
                                    id="preferirYouTubeMusic">
                             <span class="form-check-label">
                                 <i class="fa-solid fa-wand-magic-sparkles text-info me-1"></i>
-                                <strong>Preferir audio de YouTube Music</strong>
+                                <strong>Prefer YouTube Music audio</strong>
                                 <small class="d-block text-muted">
-                                    Audio puro sin contenido extra de videos.
+                                    Pure audio without extra video content.
                                 </small>
                             </span>
                         </div>
@@ -1636,7 +1636,7 @@
                                    onclick="toggleSponsorBlockCategories()">
                             <span class="form-check-label">
                                 <i class="fa-solid fa-power-off me-1"></i>
-                                <strong>Habilitar SponsorBlock</strong>
+                                <strong>Enable SponsorBlock</strong>
                             </span>
                         </div>
                     </label>
@@ -1698,7 +1698,7 @@
                                                value="interaction" id="sb_interaction">
                                         <span class="form-check-label">
                                             <i class="fa-solid fa-thumbs-up text-success me-1"></i>
-                                            <strong>Interacción</strong>
+                                            <strong>Interaction</strong>
                                         </span>
                                     </div>
                                 </label>
@@ -1710,7 +1710,7 @@
                                                value="music_offtopic" id="sb_music_offtopic">
                                         <span class="form-check-label">
                                             <i class="fa-solid fa-comment-slash text-danger me-1"></i>
-                                            <strong>No música</strong>
+                                            <strong>Non-music</strong>
                                         </span>
                                     </div>
                                 </label>
@@ -1719,10 +1719,10 @@
                     </div>
                 </div>
 
-                <!-- Botón Guardar -->
+                <!-- Save Button -->
                 <button type="button" id="saveConfigBtn" class="btn btn-primary w-100 py-2 mt-3">
                     <i class="fa-solid fa-save me-2"></i>
-                    Guardar Configuración
+                    Save Settings
                 </button>
             </form>
         </div>
