@@ -20,7 +20,9 @@ DEFAULT_CONFIG = {
     "Scrappear_metadata": True,
     "Mostrar_tiempo_de_ejecucion": True,
     "SponsorBlock_enabled": False,
-    "SponsorBlock_categories": ["sponsor", "intro", "outro"],
+    # Categories -> Sponsor and non-music segments
+    # "sponsor", "intro", "outro", "selfpromo", "preview", "filler", "interaction", "music_offtopic"
+    "SponsorBlock_categories": ["sponsor", "music_offtopic"],
     "Preferir_YouTube_Music": False,
 }
 

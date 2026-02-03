@@ -10,7 +10,11 @@ import json
 import logging
 import threading
 import shutil
+import yt_dlp
 from logging.handlers import RotatingFileHandler
+
+# Definir directorio base
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 from flask import (
     Flask,
@@ -56,6 +60,9 @@ def create_app(config_name="development"):
 
     # Configurar logging
     setup_logging(app)
+
+    # Limpieza inicial de temporales
+    cleanup_temp_dirs(app)
 
     # Inicializar extensiones
     csrf = CSRFProtect(app)
@@ -119,7 +126,22 @@ def setup_logging(app):
 
     app.logger.addHandler(file_handler)
     app.logger.setLevel(logging.INFO)
+    app.logger.setLevel(logging.INFO)
     app.logger.info("Aplicación Music Downloader iniciada")
+
+
+def cleanup_temp_dirs(app):
+    """Limpia el directorio de descargas temporales al inicio."""
+    try:
+        temp_base = os.path.join(BASE_DIR, "Descargas", "Temp")
+        if os.path.exists(temp_base):
+            shutil.rmtree(temp_base)
+            app.logger.info(f"Limpieza inicial: {temp_base} eliminado.")
+
+        # Recrear directorio vacío
+        os.makedirs(temp_base, exist_ok=True)
+    except Exception as e:
+        app.logger.error(f"Error limpiando directorio temporal: {e}")
 
 
 def register_routes(app, limiter):
@@ -230,6 +252,149 @@ def register_routes(app, limiter):
             app.logger.error(f"Error verificando playlist: {e}")
             return jsonify({"es_playlist": False})
 
+    @app.route("/search", methods=["POST"])
+    @limiter.limit("10 per minute")
+    def search_youtube():
+        """
+        Realiza una búsqueda en YouTube y retorna los 3 primeros resultados.
+        """
+        try:
+            query = request.form.get("query")
+            prefer_ytmusic = request.form.get("prefer_ytmusic") == "true"
+
+            if not query:
+                return jsonify({"error": "No query provided"}), 400
+
+            search_results = []
+
+            # Si prefiere YouTube Music, usar ytmusicapi
+            if prefer_ytmusic:
+                app.logger.info(f"Searching YouTube Music for: {query}")
+                from main import ytmusic
+
+                if not ytmusic:
+                    return jsonify({"error": "YouTube Music not available"}), 503
+
+                try:
+                    # Buscar canciones
+                    results = ytmusic.search(query, filter="songs", limit=5)
+
+                    if not results:
+                        results = ytmusic.search(query, limit=5)
+
+                    for entry in results[:5]:
+                        # Extraer duración (string "3:45" a segundos y mantener string)
+                        duration_str = entry.get("duration", "0:00")
+                        duration_seconds = 0
+                        try:
+                            parts = duration_str.split(":")
+                            if len(parts) == 2:
+                                duration_seconds = int(parts[0]) * 60 + int(parts[1])
+                            elif len(parts) == 3:
+                                duration_seconds = (
+                                    int(parts[0]) * 3600
+                                    + int(parts[1]) * 60
+                                    + int(parts[2])
+                                )
+                        except:
+                            pass
+
+                        # Obtener mejor thumbnail
+                        thumbnails = entry.get("thumbnails", [])
+                        thumbnail_url = thumbnails[-1]["url"] if thumbnails else ""
+
+                        # Artistas
+                        artists = entry.get("artists", [])
+                        artist_name = artists[0]["name"] if artists else "Unknown"
+
+                        search_results.append(
+                            {
+                                "id": entry.get("videoId"),
+                                "titulo": entry.get("title"),
+                                "url": f"https://music.youtube.com/watch?v={entry.get('videoId')}",
+                                "thumbnail": thumbnail_url,
+                                "autor": artist_name,
+                                "duracion": duration_str,
+                                "duracion_segundos": duration_seconds,
+                                "fuente": "youtube_music",
+                            }
+                        )
+
+                except Exception as e:
+                    app.logger.error(f"Error searching YTM: {e}")
+                    # Fallback to standard YouTube search if YTM fails?
+                    # User specifically asked for YTM, so maybe return error or empty.
+                    # Let's just log and return what we have (empty).
+                    pass
+
+            else:
+                # Búsqueda estándar en YouTube (yt-dlp)
+                app.logger.info(f"Searching YouTube for: {query}")
+
+                ydl_opts = {
+                    "quiet": True,
+                    "extract_flat": True,
+                    "noplaylist": True,
+                    "nocheckcertificate": True,
+                }
+
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    # ytsearch5: busca 5 resultados
+                    result = ydl.extract_info(f"ytsearch5:{query}", download=False)
+
+                    if "entries" not in result:
+                        return jsonify({"error": "No results found"}), 404
+
+                    for entry in result["entries"]:
+                        # Formatear duración
+                        duration = entry.get("duration", 0)
+                        if isinstance(duration, (int, float)):
+                            minutes = int(duration // 60)
+                            seconds = int(duration % 60)
+                            duration_str = f"{minutes}:{seconds:02d}"
+                        else:
+                            duration_str = str(duration)
+
+                        search_results.append(
+                            {
+                                "id": entry.get("id"),
+                                "titulo": entry.get("title"),
+                                "url": entry.get("url")
+                                or f"https://www.youtube.com/watch?v={entry.get('id')}",
+                                "thumbnail": entry.get("thumbnail")
+                                or f"https://i.ytimg.com/vi/{entry.get('id')}/hqdefault.jpg",
+                                "autor": entry.get("uploader")
+                                or entry.get("channel", "Unknown"),
+                                "duracion": duration_str,
+                                "duracion_segundos": duration,
+                                "fuente": "youtube",
+                            }
+                        )
+
+            if not search_results:
+                return jsonify({"error": "No results found"}), 404
+
+            return jsonify(
+                {
+                    "success": True,
+                    "es_playlist": True,  # Tratamos como playlist para reutilizar UI
+                    "playlist": {
+                        "titulo": f"Results for: {query}",
+                        "autor": (
+                            "YouTube Music Search"
+                            if prefer_ytmusic
+                            else "YouTube Search"
+                        ),
+                        "items": search_results,
+                        "total": len(search_results),
+                    },
+                }
+            )
+
+        except Exception as e:
+            app.logger.error(f"Error searching: {str(e)}")
+            return jsonify({"error": str(e)}), 500
+
     @app.route("/media_info", methods=["POST"])
     @limiter.limit("60 per minute")
     def media_info():
@@ -277,6 +442,7 @@ def register_routes(app, limiter):
     @limiter.limit("10 per minute")
     def descargar():
         """Procesa la descarga de música."""
+        temp_dir = None
         try:
             input_url = request.form.get("inputURL", "").strip()
             is_playlist_mode = request.form.get("is_playlist_mode", "false") == "true"
@@ -340,8 +506,8 @@ def register_routes(app, limiter):
                         )
 
             # Definir directorio del script y temporal único
-            SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-            temp_dir = os.path.join(SCRIPT_DIR, "Descargas", "Temp", task_id)
+            # SCRIPT_DIR ahora usa la constante global BASE_DIR
+            temp_dir = os.path.join(BASE_DIR, "Descargas", "Temp", task_id)
 
             # Asegurar que el directorio temporal existe (y empezar limpio)
             if os.path.exists(temp_dir):
@@ -426,6 +592,16 @@ def register_routes(app, limiter):
 
         except Exception as e:
             app.logger.error(f"Error en descarga: {e}")
+            # Limpieza en caso de error inesperado
+            if temp_dir and os.path.exists(temp_dir):
+                try:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    app.logger.info(
+                        f"Directorio temporal limpiado tras error: {temp_dir}"
+                    )
+                except Exception as cleanup_error:
+                    app.logger.error(f"Error limpiando tras fallo: {cleanup_error}")
+
             return jsonify({"error": "Ha ocurrido un error durante la descarga."}), 500
 
     @app.route("/progress/<task_id>")

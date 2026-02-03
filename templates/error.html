@@ -4,34 +4,8 @@
 
 {% block customCSS %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}" />
-<style>
-	.error-container {
-		min-height: 70vh;
-		display: flex;
-		flex-direction: column;
-		justify-content: center;
-		align-items: center;
-		text-align: center;
-		padding: 2rem;
-	}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/error.css') }}" />
 
-	.error-icon {
-		font-size: 5rem;
-		margin-bottom: 1.5rem;
-		color: #dc3545;
-	}
-
-	.error-title {
-		font-size: 2rem;
-		margin-bottom: 1rem;
-	}
-
-	.error-message {
-		color: #6c757d;
-		margin-bottom: 2rem;
-		max-width: 500px;
-	}
-</style>
 {% endblock %}
 
 {% block body %}
