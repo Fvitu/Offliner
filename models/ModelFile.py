@@ -49,7 +49,7 @@ class ModelFile:
         if config_dict.get("Formato_audio") in ["mp3", "wav", "m4a", "flac"]:
             validated["Formato_audio"] = config_dict["Formato_audio"]
 
-        if config_dict.get("Formato_video") in ["mp4", "mov", "avi", "flv"]:
+        if config_dict.get("Formato_video") in ["mp4", "mov", "mkv", "webm"]:
             validated["Formato_video"] = config_dict["Formato_video"]
 
         # Campos booleanos

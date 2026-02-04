@@ -1,4 +1,4 @@
-{% extends "./layout.html" %} {% block title %} Music Downloader {% endblock %} {% block customCSS %}
+{% extends "./layout.html" %} {% block title %} Offliner {% endblock %} {% block customCSS %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}" />
 <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}" />
 {% endblock %} {% block body %}
@@ -10,7 +10,7 @@
     <nav class="navbar navbar-expand-lg navbar-dark rounded text-center" aria-label="Thirteenth navbar example">
         <div class="container-fluid">
             <a class="navbar-brand" href="{{url_for('dashboard')}}">
-                <i class="fa-duotone fa-down-to-bracket"></i> Music - Downloader
+                <i class="fa-duotone fa-down-to-bracket"></i> Offliner
             </a>
 
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar"
@@ -35,7 +35,7 @@
         <h1 class="text-center mb-4">
             <img src="https://em-content.zobj.net/source/animated-noto-color-emoji/356/waving-hand_1f44b.gif"
                  alt="Waving hand" width="45px" />
-            Music Downloader
+            Welcome to Offliner!
         </h1>
 
         <p class="text-center text-muted mb-5">
@@ -93,6 +93,10 @@
                                             <span id="mediaSource" class="source-badge youtube">
                                                 <i class="fa-brands fa-youtube"></i> YouTube
                                             </span>
+                                            <span id="mediaSBBadge" class="badge bg-warning text-dark" style="display:none;">
+                                                <i class="fa-solid fa-scissors"></i>
+                                                <span id="mediaSBDuration">SponsorBlock</span>
+                                            </span>
                                         </div>
                                         <div id="mediaTitle" class="media-preview-title">Video Title</div>
                                         <div class="media-preview-meta">
@@ -101,6 +105,33 @@
                                             <span class="mx-2">•</span>
                                             <i class="fa-solid fa-clock me-1"></i>
                                             <span id="mediaDuration">0:00</span>
+                                        </div>
+                                        <div class="media-preview-controls mt-2">
+                                            <div class="btn-group btn-group-sm" role="group">
+                                                <button type="button" class="btn btn-outline-secondary" id="mediaFormatAudio">
+                                                    <i class="fa-solid fa-music"></i> Audio
+                                                </button>
+                                                <button type="button" class="btn btn-outline-secondary" id="mediaFormatVideo">
+                                                    <i class="fa-solid fa-video"></i> Video
+                                                </button>
+                                            </div>
+                                            <div class="custom-dropdown ms-2" id="mediaFileFormatDropdown">
+                                                <button type="button" class="custom-dropdown-toggle">
+                                                    <span class="dropdown-value">Default Format</span>
+                                                    <i class="fa-solid fa-chevron-down"></i>
+                                                </button>
+                                                <div class="custom-dropdown-menu">
+                                                    <div class="custom-dropdown-item" data-value="default">Default Format</div>
+                                                    <div class="custom-dropdown-item" data-value="mp3">MP3</div>
+                                                    <div class="custom-dropdown-item" data-value="m4a">M4A</div>
+                                                    <div class="custom-dropdown-item" data-value="flac">FLAC</div>
+                                                    <div class="custom-dropdown-item" data-value="wav">WAV</div>
+                                                    <div class="custom-dropdown-item" data-value="mp4">MP4</div>
+                                                    <div class="custom-dropdown-item" data-value="mkv">MKV</div>
+                                                    <div class="custom-dropdown-item" data-value="webm">WebM</div>
+                                                    <div class="custom-dropdown-item" data-value="mov">MOV</div>
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
                                     <button type="button" class="btn btn-outline-secondary btn-sm" id="closeMediaPreview">
@@ -126,7 +157,39 @@
                                         <button type="button" class="btn btn-sm btn-outline-secondary" id="selectNoneBtn">
                                             <i class="fa-solid fa-xmark me-1"></i> Deselect All
                                         </button>
-                                        <button type="button" class="btn btn-sm btn-outline-danger" id="closePlaylistBtn">
+                                        <div class="btn-group btn-group-sm ms-2" role="group">
+                                            <button type="button" class="btn btn-outline-primary dropdown-toggle" data-bs-toggle="dropdown">
+                                                <i class="fa-solid fa-gears me-1"></i> Bulk Actions
+                                            </button>
+                                            <ul class="dropdown-menu dropdown-menu-dark">
+                                                <li>
+                                                    <h6 class="dropdown-header">Set All To:</h6>
+                                                </li>
+                                                <li><button class="dropdown-item" id="bulkSetAudio"><i class="fa-solid fa-music me-2"></i>Audio</button></li>
+                                                <li><button class="dropdown-item" id="bulkSetVideo"><i class="fa-solid fa-video me-2"></i>Video</button></li>
+                                                <li>
+                                                    <hr class="dropdown-divider">
+                                                </li>
+                                                <li>
+                                                    <h6 class="dropdown-header">Audio Formats:</h6>
+                                                </li>
+                                                <li><button class="dropdown-item" data-format="mp3"><i class="fa-solid fa-file-audio me-2"></i>MP3</button></li>
+                                                <li><button class="dropdown-item" data-format="m4a"><i class="fa-solid fa-file-audio me-2"></i>M4A</button></li>
+                                                <li><button class="dropdown-item" data-format="flac"><i class="fa-solid fa-file-audio me-2"></i>FLAC</button></li>
+                                                <li><button class="dropdown-item" data-format="wav"><i class="fa-solid fa-file-audio me-2"></i>WAV</button></li>
+                                                <li>
+                                                    <hr class="dropdown-divider">
+                                                </li>
+                                                <li>
+                                                    <h6 class="dropdown-header">Video Formats:</h6>
+                                                </li>
+                                                <li><button class="dropdown-item" data-format="mp4"><i class="fa-solid fa-file-video me-2"></i>MP4</button></li>
+                                                <li><button class="dropdown-item" data-format="mkv"><i class="fa-solid fa-file-video me-2"></i>MKV</button></li>
+                                                <li><button class="dropdown-item" data-format="webm"><i class="fa-solid fa-file-video me-2"></i>WebM</button></li>
+                                                <li><button class="dropdown-item" data-format="mov"><i class="fa-solid fa-file-video me-2"></i>MOV</button></li>
+                                            </ul>
+                                        </div>
+                                        <button type="button" class="btn btn-sm btn-outline-danger ms-2" id="closePlaylistBtn">
                                             <i class="fa-solid fa-times"></i>
                                         </button>
                                     </div>
@@ -189,7 +252,7 @@
                 <footer class="text-center mt-5 mb-4">
                     <span class="text-muted">
                         Created with <i class="fa-solid fa-heart text-danger"></i> by
-                        <span class="text-light">Fvitu</span> &copy; 2026
+                        <span class="text-light">Fvitu</span> &copy; {{ current_year }}
                     </span>
                 </footer>
             </div>
@@ -330,30 +393,30 @@
                                 </span>
                             </div>
                         </label>
+                        <label class="option-card" data-config="Formato_video" data-value="mkv">
+                            <div class="form-check mb-0">
+                                <input class="form-check-input" type="radio" name="Formato_video"
+                                       id="formato_mkv" value="mkv">
+                                <span class="form-check-label">
+                                    <strong>MKV</strong>
+                                </span>
+                            </div>
+                        </label>
+                        <label class="option-card" data-config="Formato_video" data-value="webm">
+                            <div class="form-check mb-0">
+                                <input class="form-check-input" type="radio" name="Formato_video"
+                                       id="formato_webm" value="webm">
+                                <span class="form-check-label">
+                                    <strong>WEBM</strong>
+                                </span>
+                            </div>
+                        </label>
                         <label class="option-card" data-config="Formato_video" data-value="mov">
                             <div class="form-check mb-0">
                                 <input class="form-check-input" type="radio" name="Formato_video"
                                        id="formato_mov" value="mov">
                                 <span class="form-check-label">
                                     <strong>MOV</strong>
-                                </span>
-                            </div>
-                        </label>
-                        <label class="option-card" data-config="Formato_video" data-value="avi">
-                            <div class="form-check mb-0">
-                                <input class="form-check-input" type="radio" name="Formato_video"
-                                       id="formato_avi" value="avi">
-                                <span class="form-check-label">
-                                    <strong>AVI</strong>
-                                </span>
-                            </div>
-                        </label>
-                        <label class="option-card" data-config="Formato_video" data-value="flv">
-                            <div class="form-check mb-0">
-                                <input class="form-check-input" type="radio" name="Formato_video"
-                                       id="formato_flv" value="flv">
-                                <span class="form-check-label">
-                                    <strong>FLV</strong>
                                 </span>
                             </div>
                         </label>
