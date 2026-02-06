@@ -31,8 +31,7 @@ body {
 /*  */
 
 .navbar {
-    box-shadow: 9px -8px 20px 14px #00000045;
-    margin-bottom: 20px;
+    margin-bottom: 0;
     padding: 8px 30px;
 }
 

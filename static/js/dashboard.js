@@ -140,9 +140,7 @@ function createFormatControls(url, currentFormat) {
 	const audioFormats = ["mp3", "m4a", "flac", "wav"];
 	const videoFormats = ["mp4", "mkv", "webm", "mov"];
 	const formats = currentFormat === "audio" ? audioFormats : videoFormats;
-	const globalFormat = currentFormat === "audio"
-		? (currentConfig.Formato_audio || "mp3")
-		: (currentConfig.Formato_video || "mp4");
+	const globalFormat = currentFormat === "audio" ? currentConfig.Formato_audio || "mp3" : currentConfig.Formato_video || "mp4";
 
 	return `
 		<div class="unified-format-controls">
@@ -216,9 +214,7 @@ function updateFileFormatDropdown(url, mediaType) {
 	const valueSpan = dropdown.querySelector(".dropdown-value");
 
 	const formats = mediaType === "audio" ? audioFormats : videoFormats;
-	const globalFormat = mediaType === "audio"
-		? (currentConfig.Formato_audio || "mp3")
-		: (currentConfig.Formato_video || "mp4");
+	const globalFormat = mediaType === "audio" ? currentConfig.Formato_audio || "mp3" : currentConfig.Formato_video || "mp4";
 
 	// Clear and rebuild menu
 	menu.innerHTML = "";
@@ -479,41 +475,76 @@ let mediaPreviewFileFormat = null;
 // ============================================
 // Toast System
 // ============================================
+const TOAST_DURATION = 2500; // ms — auto-dismiss delay
+const TOAST_EXIT_MS = 350; // must match CSS toastSlideOut duration
+
 function showToast(message, type = "primary") {
 	const container = document.getElementById("toastContainer");
-	const toastId = "toast-" + Date.now();
+	const toastId = "toast-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6);
+
+	// Map legacy "primary" → "info" for the CSS class, keep others as-is
+	const cssType = type === "primary" ? "info" : type;
 
 	const icons = {
 		primary: "fa-circle-info",
+		info: "fa-circle-info",
 		success: "fa-circle-check",
 		danger: "fa-circle-exclamation",
 		warning: "fa-triangle-exclamation",
 	};
 
 	const toastHtml = `
-        <div id="${toastId}" class="toast toast-custom align-items-center text-bg-${type} border-0 show" role="alert">
-            <div class="d-flex">
-                <div class="toast-body">
-                    <i class="fa-solid ${icons[type] || icons.primary} me-2"></i>
-                    ${message}
-                </div>
-                <button type="button" class="btn-close btn-close-white me-2 m-auto" onclick="closeToast('${toastId}')"></button>
-            </div>
-        </div>
-    `;
+		<div id="${toastId}" class="toast toast-custom toast-${cssType} toast-slide-in show" role="alert">
+			<div class="d-flex align-items-center">
+				<div class="toast-body">
+					<i class="fa-solid ${icons[type] || icons.info}"></i>
+					${message}
+				</div>
+				<button type="button" class="btn-close me-2 m-auto" onclick="closeToast('${toastId}')" aria-label="Close"></button>
+			</div>
+			<div class="toast-progress-track">
+				<div class="toast-progress-bar" style="animation-duration: ${TOAST_DURATION}ms;"></div>
+			</div>
+		</div>
+	`;
 
 	container.insertAdjacentHTML("beforeend", toastHtml);
 
-	// Auto-hide after 5 seconds
-	setTimeout(() => closeToast(toastId), 5000);
+	const toastEl = document.getElementById(toastId);
+
+	// Track elapsed time so we can pause/resume without resetting
+	let remainingMs = TOAST_DURATION;
+	let timerStart = Date.now();
+	let autoTimer = setTimeout(() => closeToast(toastId), remainingMs);
+
+	toastEl.addEventListener("mouseenter", () => {
+		// Pause: clear JS timer, save remaining time
+		clearTimeout(autoTimer);
+		remainingMs -= Date.now() - timerStart;
+		if (remainingMs < 0) remainingMs = 0;
+		// CSS handles pausing the progress bar via animation-play-state: paused
+	});
+
+	toastEl.addEventListener("mouseleave", () => {
+		if (remainingMs <= 0) {
+			closeToast(toastId);
+			return;
+		}
+		// Resume: restart JS timer with remaining time
+		// CSS automatically resumes the progress bar animation via animation-play-state
+		timerStart = Date.now();
+		autoTimer = setTimeout(() => closeToast(toastId), remainingMs);
+	});
+	autoTimer = setTimeout(() => closeToast(toastId), remainingMs);
 }
 
 function closeToast(toastId) {
 	const toast = document.getElementById(toastId);
-	if (toast) {
-		toast.classList.add("toast-fade-out");
-		setTimeout(() => toast.remove(), 500);
-	}
+	if (!toast || toast.dataset.closing) return;
+	toast.dataset.closing = "true";
+	toast.classList.remove("toast-slide-in");
+	toast.classList.add("toast-slide-out");
+	setTimeout(() => toast.remove(), TOAST_EXIT_MS);
 }
 
 // ============================================
@@ -548,14 +579,13 @@ document.addEventListener("DOMContentLoaded", function () {
 				// Actualizar el input hidden
 				document.getElementById("userConfigInput").value = JSON.stringify(config);
 
-				// Cerrar el offcanvas automáticamente
-				// Usar el ID real del offcanvas
-				const offcanvasElement = document.getElementById("configSidebar");
-				let offcanvasInstance = bootstrap.Offcanvas.getInstance(offcanvasElement);
-				if (!offcanvasInstance) {
-					offcanvasInstance = new bootstrap.Offcanvas(offcanvasElement);
+				// Cerrar el modal automáticamente
+				const modalElement = document.getElementById("configModal");
+				let modalInstance = bootstrap.Modal.getInstance(modalElement);
+				if (!modalInstance) {
+					modalInstance = new bootstrap.Modal(modalElement);
 				}
-				offcanvasInstance.hide();
+				modalInstance.hide();
 			} else {
 				showToast("Error saving settings", "danger");
 			}
@@ -596,8 +626,16 @@ function toggleSponsorBlockCategories() {
 	const categories = document.getElementById("sponsorblockCategories");
 	const card = checkbox.closest(".option-card");
 
-	categories.style.display = checkbox.checked ? "block" : "none";
-	card.classList.toggle("selected", checkbox.checked);
+	const enabled = checkbox.checked;
+	card.classList.toggle("selected", enabled);
+
+	// Toggle disabled visual state instead of hiding
+	categories.classList.toggle("sponsorblock-disabled", !enabled);
+
+	// Disable/enable all category checkboxes
+	categories.querySelectorAll(".sponsorblock-category").forEach((cb) => {
+		cb.disabled = !enabled;
+	});
 }
 
 // ============================================

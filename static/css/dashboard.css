@@ -1,18 +1,56 @@
-/* Toast animations */
-.toast-fade-out {
-    animation: fadeOut 0.5s ease-out forwards;
+/* ============================================
+   Toast Notification System
+   ============================================ */
+
+/* Entry animation — slide in from right */
+@keyframes toastSlideIn {
+    0% {
+        opacity: 0;
+        transform: translateX(120%);
+    }
+
+    60% {
+        opacity: 1;
+        transform: translateX(-6px);
+    }
+
+    100% {
+        opacity: 1;
+        transform: translateX(0);
+    }
 }
 
-@keyframes fadeOut {
-    from {
+/* Exit animation — slide out to right + fade */
+@keyframes toastSlideOut {
+    0% {
         opacity: 1;
         transform: translateX(0);
     }
 
-    to {
+    100% {
         opacity: 0;
-        transform: translateX(100px);
+        transform: translateX(120%);
     }
+}
+
+/* Progress bar countdown */
+@keyframes toastProgress {
+    from {
+        width: 100%;
+    }
+
+    to {
+        width: 0%;
+    }
+}
+
+.toast-slide-in {
+    animation: toastSlideIn 0.45s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.toast-slide-out {
+    animation: toastSlideOut 0.35s cubic-bezier(0.55, 0, 1, 0.45) forwards;
+    pointer-events: none;
 }
 
 /* Config section styling */
@@ -80,6 +118,13 @@
     gap: 0.5rem;
 }
 
+/* Stacked option layout (full width, one per row) */
+.option-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
 /* Feature badge */
 .feature-badge {
     display: inline-flex;
@@ -105,14 +150,126 @@
     color: #fbbf24;
 }
 
+/* SponsorBlock disabled state */
+.sponsorblock-disabled {
+    opacity: 0.4;
+    pointer-events: none;
+    user-select: none;
+}
+
+.sponsorblock-disabled .option-card {
+    cursor: not-allowed;
+}
+
 /* Toast container */
 #toastContainer {
     z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
 }
 
+/* Base toast card */
 .toast-custom {
-    min-width: 300px;
-    backdrop-filter: blur(10px);
+    min-width: 320px;
+    max-width: 420px;
+    border-radius: 10px;
+    overflow: hidden;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35),
+        0 2px 8px rgba(0, 0, 0, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    position: relative;
+}
+
+.toast-custom .toast-body {
+    font-size: 0.9rem;
+    font-weight: 500;
+    padding: 0.75rem 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.toast-custom .toast-body i {
+    font-size: 1.1rem;
+    flex-shrink: 0;
+}
+
+.toast-custom .btn-close {
+    filter: brightness(0) invert(1);
+    opacity: 0.6;
+    transition: opacity 0.2s ease;
+}
+
+.toast-custom .btn-close:hover {
+    opacity: 1;
+}
+
+/* ---- Toast type color schemes ---- */
+
+/* Info (primary) */
+.toast-custom.toast-info {
+    background: rgba(37, 99, 235, 0.88);
+    border-color: rgba(96, 165, 250, 0.3);
+}
+
+.toast-custom.toast-info .toast-progress-bar {
+    background: rgba(191, 219, 254, 0.7);
+}
+
+/* Success */
+.toast-custom.toast-success {
+    background: rgba(22, 163, 74, 0.88);
+    border-color: rgba(74, 222, 128, 0.3);
+}
+
+.toast-custom.toast-success .toast-progress-bar {
+    background: rgba(187, 247, 208, 0.7);
+}
+
+/* Danger / Error */
+.toast-custom.toast-danger {
+    background: rgba(220, 38, 38, 0.88);
+    border-color: rgba(248, 113, 113, 0.3);
+}
+
+.toast-custom.toast-danger .toast-progress-bar {
+    background: rgba(254, 202, 202, 0.7);
+}
+
+/* Warning */
+.toast-custom.toast-warning {
+    background: rgba(180, 130, 10, 0.9);
+    border-color: rgba(253, 224, 71, 0.3);
+}
+
+.toast-custom.toast-warning .toast-progress-bar {
+    background: rgba(254, 240, 138, 0.7);
+}
+
+/* Progress bar track */
+.toast-progress-track {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: 3px;
+    background: rgba(0, 0, 0, 0.2);
+}
+
+/* Progress bar fill */
+.toast-progress-bar {
+    height: 100%;
+    width: 100%;
+    border-radius: 0 0 10px 10px;
+    animation: toastProgress linear forwards;
+}
+
+/* Pause progress bar on hover */
+.toast-custom:hover .toast-progress-bar {
+    animation-play-state: paused;
 }
 
 /* Playlist selector styles */
@@ -371,28 +528,45 @@
     margin-bottom: 0.5rem;
 }
 
-/* Sidebar Offcanvas - Diseño oscuro alineado con la web */
-.offcanvas-config {
-    width: 455px !important;
-    max-width: 90vw;
-    background: #212529 !important;
-    border-left: 1px solid rgba(255, 255, 255, 0.15);
+/* Glassmorphism Navbar */
+.navbar-glass {
+    background: rgba(33, 37, 41, 0.7) !important;
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.3);
+    padding: 0.6rem 1.5rem;
+    z-index: 1030;
 }
 
-.offcanvas-config .offcanvas-header {
-    border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+/* Settings Modal Styling */
+#configModal .modal-content {
+    background: #1a1d21 !important;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 16px;
+    overflow: hidden;
+}
+
+#configModal .modal-header {
     background: rgba(0, 0, 0, 0.3);
-    padding: 1rem 1.25rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    padding: 1rem 1.5rem;
 }
 
-.offcanvas-config .offcanvas-title {
+#configModal .modal-title {
     color: #fff;
     font-weight: 600;
 }
 
-.offcanvas-config .offcanvas-body {
-    padding: 1rem;
-    background: #212529;
+#configModal .modal-body {
+    padding: 1.5rem;
+    background: #1a1d21;
+}
+
+#configModal .modal-footer {
+    background: rgba(0, 0, 0, 0.2);
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    padding: 1rem 1.5rem;
 }
 
 .btn-config-trigger {
@@ -676,4 +850,296 @@
     border-color: rgba(13, 110, 253, 0.8) !important;
     box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.25) !important;
     outline: none !important;
+}
+
+/* ============================================
+   Legal Disclaimer Footer
+   ============================================ */
+body {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+
+.container {
+    flex: 1;
+}
+
+.disclaimer-footer {
+    background: rgba(0, 0, 0, 0.3);
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 1.25rem 1rem;
+    font-size: 0.75rem;
+    line-height: 1.5;
+    color: #6c757d;
+}
+
+/* ============================================
+   Mobile Responsive Media Queries
+   ============================================ */
+
+/* Mobile devices (phones, less than 768px) */
+@media (max-width: 767.98px) {
+
+    /* Ensure no horizontal overflow */
+    body {
+        overflow-x: hidden;
+    }
+
+    .container {
+        max-width: 100% !important;
+        padding-left: 1rem;
+        padding-right: 1rem;
+    }
+
+    /* Modal adjustments for mobile */
+    .modal-dialog {
+        margin: 0.5rem;
+        max-width: calc(100% - 1rem);
+    }
+
+    .modal-body {
+        padding: 1rem !important;
+    }
+
+    /* Config section - touch-friendly spacing */
+    .config-section {
+        padding: 1rem;
+        margin-bottom: 1rem;
+    }
+
+    .config-section-title {
+        font-size: 1rem;
+    }
+
+    .config-section-description {
+        font-size: 0.8rem;
+        padding-left: 2rem;
+    }
+
+    /* Option cards - larger touch targets */
+    .option-card {
+        padding: 1rem;
+        margin-bottom: 0.75rem;
+        min-height: 50px;
+        display: flex;
+        align-items: center;
+    }
+
+    .option-card .form-check {
+        width: 100%;
+    }
+
+    .option-card .form-check-input {
+        width: 20px;
+        height: 20px;
+        margin-top: 0;
+    }
+
+    .option-card .form-check-label {
+        font-size: 1rem;
+        padding-left: 0.5rem;
+    }
+
+    /* Ensure rows don't overflow */
+    .row {
+        margin-left: 0;
+        margin-right: 0;
+    }
+
+    .row>* {
+        padding-left: 0.5rem;
+        padding-right: 0.5rem;
+    }
+
+    /* Playlist header - stack vertically */
+    .playlist-header {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .playlist-actions {
+        width: 100%;
+        justify-content: space-between;
+    }
+
+    .playlist-actions .btn {
+        flex: 1;
+        font-size: 0.75rem;
+        padding: 0.375rem 0.5rem;
+    }
+
+    /* Custom dropdown on mobile */
+    .custom-dropdown {
+        width: 100%;
+    }
+
+    .custom-dropdown-toggle {
+        width: 100%;
+        justify-content: space-between;
+    }
+
+    #bulkActionsDropdown .custom-dropdown-toggle {
+        min-width: auto;
+        width: 100%;
+    }
+
+    /* Media item - stack thumbnail and content */
+    .media-item {
+        flex-wrap: wrap;
+        padding: 0.75rem;
+    }
+
+    .media-item-thumbnail {
+        width: 100%;
+        height: auto;
+        max-height: 180px;
+        margin-bottom: 0.75rem;
+    }
+
+    .media-item-info {
+        width: 100%;
+    }
+
+    .media-item-title {
+        font-size: 0.95rem;
+        white-space: normal;
+        line-height: 1.3;
+    }
+
+    .media-item-meta {
+        font-size: 0.8rem;
+        flex-wrap: wrap;
+    }
+
+    /* Media controls - stack vertically */
+    .media-item-controls,
+    .unified-format-controls {
+        flex-wrap: wrap;
+        width: 100%;
+        gap: 0.5rem;
+    }
+
+    .unified-format-controls .btn-group {
+        width: 100%;
+    }
+
+    .unified-format-controls .btn-group .btn {
+        flex: 1;
+        font-size: 0.875rem;
+        padding: 0.5rem;
+    }
+
+    .item-file-format {
+        width: 100%;
+        font-size: 0.875rem;
+        padding: 0.5rem;
+    }
+
+    /* Input groups on mobile */
+    .input-group-lg {
+        flex-wrap: wrap;
+    }
+
+    .input-group-lg .btn,
+    .input-group-lg .form-control {
+        font-size: 1rem;
+    }
+
+    #pasteBtn {
+        width: 100%;
+        margin-top: 0.5rem;
+        border-radius: 0.5rem !important;
+    }
+
+    /* Toast on mobile */
+    .toast-custom {
+        min-width: 280px;
+        max-width: calc(100vw - 2rem);
+    }
+
+    /* Buttons - full width on mobile */
+    .btn-config-trigger {
+        width: 100%;
+        text-align: center;
+    }
+
+    /* Card adjustments */
+    .card-body {
+        padding: 1rem;
+    }
+
+    /* Navbar spacing */
+    .navbar {
+        padding: 0.5rem 1rem;
+    }
+
+    /* Main container top padding */
+    .container[style*="padding-top"] {
+        padding-top: 80px !important;
+    }
+
+    /* Feature badges */
+    .feature-badge {
+        font-size: 0.65rem;
+        padding: 0.1rem 0.4rem;
+    }
+
+    /* Modal title */
+    .modal-title {
+        font-size: 1.1rem;
+    }
+
+    /* Footer text */
+    footer {
+        font-size: 0.875rem;
+        padding: 1rem 0.5rem;
+    }
+
+    .disclaimer-footer {
+        padding: 1rem 0.75rem;
+        font-size: 0.7rem;
+    }
+
+    .disclaimer-footer p {
+        margin-bottom: 0.5rem !important;
+    }
+}
+
+/* Small tablets (768px to 991px) */
+@media (min-width: 768px) and (max-width: 991.98px) {
+    .config-section-description {
+        font-size: 0.85rem;
+    }
+
+    .option-card {
+        padding: 0.875rem 1rem;
+    }
+
+    .media-item-thumbnail {
+        width: 120px;
+        height: 85px;
+    }
+}
+
+/* Landscape phones */
+@media (max-width: 767.98px) and (orientation: landscape) {
+    .modal-dialog {
+        max-height: calc(100vh - 1rem);
+    }
+
+    .modal-body {
+        max-height: calc(100vh - 8rem);
+        overflow-y: auto;
+    }
+
+    .media-item-thumbnail {
+        width: 140px;
+        height: auto;
+        margin-bottom: 0;
+    }
+
+    .media-item {
+        flex-wrap: nowrap;
+    }
 }
