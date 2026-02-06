@@ -804,6 +804,54 @@ def descargar_metadata(
 
                     elif formato_archivo == ".wav":
                         try:
+                            # Step 1: Use ffmpeg to write RIFF INFO metadata
+                            # (readable by Windows Media Player and Windows Explorer)
+                            temp_wav = ruta_del_archivo + ".tmp.wav"
+                            ffmpeg_cmd = [
+                                "ffmpeg",
+                                "-y",
+                                "-i",
+                                ruta_del_archivo,
+                                "-metadata",
+                                f"title={nombre_archivo}",
+                                "-metadata",
+                                f"artist={nombre_artistas}",
+                            ]
+                            if nombre_album_limpio:
+                                ffmpeg_cmd.extend(
+                                    ["-metadata", f"album={nombre_album_limpio}"]
+                                )
+                            if anio_publicacion:
+                                ffmpeg_cmd.extend(
+                                    ["-metadata", f"date={anio_publicacion}"]
+                                )
+                            ffmpeg_cmd.extend(["-c", "copy", temp_wav])
+
+                            ffmpeg_result = subprocess.run(
+                                ffmpeg_cmd,
+                                capture_output=True,
+                                timeout=60,
+                                creationflags=(
+                                    subprocess.CREATE_NO_WINDOW
+                                    if os.name == "nt"
+                                    else 0
+                                ),
+                            )
+                            if ffmpeg_result.returncode == 0 and os.path.exists(
+                                temp_wav
+                            ):
+                                os.replace(temp_wav, ruta_del_archivo)
+                                logger.info(
+                                    "RIFF INFO metadata written to WAV via ffmpeg"
+                                )
+                            else:
+                                if os.path.exists(temp_wav):
+                                    os.remove(temp_wav)
+                                logger.warning(
+                                    "ffmpeg RIFF INFO failed, falling back to ID3 only"
+                                )
+
+                            # Step 2: Add ID3 tags (album art + metadata for players that support ID3 in WAV)
                             audio_wave = WAVE(ruta_del_archivo)
                             if audio_wave.tags is None:
                                 audio_wave.add_tags()
@@ -814,7 +862,7 @@ def descargar_metadata(
                                     encoding=3,
                                     mime="image/jpeg",
                                     type=3,
-                                    desc="Cover",
+                                    desc="Front Cover",
                                     data=portada_data,
                                 )
                             )
@@ -829,7 +877,7 @@ def descargar_metadata(
                             tags.delall("TYER")
                             if anio_publicacion:
                                 tags.add(TDRC(encoding=3, text=anio_publicacion))
-                            audio_wave.save(v2_version=3)
+                            audio_wave.save()
                         except Exception as e:
                             logger.error(f"Error adding metadata to WAV: {e}")
 
@@ -888,140 +936,295 @@ def descargar_metadata(
 # ============================================
 
 
+def _detectar_gpu_encoder():
+    """Detects available GPU H.264 encoders. Result is cached after first call.
+
+    Returns:
+        str or None: 'nvidia', 'amd', 'intel', or None if no GPU encoder found.
+    """
+    if hasattr(_detectar_gpu_encoder, "_cache"):
+        return _detectar_gpu_encoder._cache
+
+    _detectar_gpu_encoder._cache = None
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+        output = result.stdout
+
+        if "h264_nvenc" in output:
+            _detectar_gpu_encoder._cache = "nvidia"
+            logger.info("GPU encoder detected: NVIDIA (NVENC)")
+        elif "h264_amf" in output:
+            _detectar_gpu_encoder._cache = "amd"
+            logger.info("GPU encoder detected: AMD (AMF)")
+        elif "h264_qsv" in output:
+            _detectar_gpu_encoder._cache = "intel"
+            logger.info("GPU encoder detected: Intel (QSV)")
+        else:
+            logger.info("No GPU encoder detected, using software encoding")
+    except Exception as e:
+        logger.debug(f"GPU encoder detection failed: {e}")
+
+    return _detectar_gpu_encoder._cache
+
+
+def _obtener_config_formato_video(formato, gpu=None):
+    """Returns FFmpeg codec config for the given format, using GPU when available.
+
+    GPU acceleration is used for H.264-based formats (mp4, mkv, mov).
+    WebM always uses software VP9 encoding.
+    """
+    # GPU-accelerated H.264 configs
+    if gpu and formato in ("mp4", "mkv", "mov"):
+        if gpu == "nvidia":
+            base = {
+                "vcodec": "h264_nvenc",
+                "acodec": "aac",
+                "extra_args": [
+                    "-preset",
+                    "p4",  # Fast NVENC preset (p1=fastest, p7=best)
+                    "-rc",
+                    "vbr",  # Variable bitrate mode
+                    "-cq",
+                    "23",  # Constant quality (similar to CRF 23)
+                    "-b:v",
+                    "0",  # Let CQ control quality
+                    "-spatial-aq",
+                    "1",  # Spatial adaptive quantization
+                    "-temporal-aq",
+                    "1",  # Temporal adaptive quantization
+                ],
+            }
+        elif gpu == "amd":
+            base = {
+                "vcodec": "h264_amf",
+                "acodec": "aac",
+                "extra_args": [
+                    "-quality",
+                    "speed",
+                    "-rc",
+                    "cqp",  # Constant QP mode
+                    "-qp_i",
+                    "23",
+                    "-qp_p",
+                    "23",
+                    "-qp_b",
+                    "23",
+                ],
+            }
+        elif gpu == "intel":
+            base = {
+                "vcodec": "h264_qsv",
+                "acodec": "aac",
+                "extra_args": [
+                    "-preset",
+                    "fast",
+                    "-global_quality",
+                    "23",
+                ],
+            }
+        else:
+            return None
+
+        # Format-specific flags
+        if formato in ("mp4", "mov"):
+            base["extra_args"].extend(["-movflags", "+faststart"])
+
+        return base
+
+    # Software fallback / WebM
+    configs = {
+        "mp4": {
+            "vcodec": "libx264",
+            "acodec": "aac",
+            "extra_args": [
+                "-preset",
+                "faster",
+                "-crf",
+                "23",
+                "-movflags",
+                "+faststart",
+                "-tune",
+                "film",
+            ],
+        },
+        "mkv": {
+            "vcodec": "libx264",
+            "acodec": "aac",
+            "extra_args": [
+                "-preset",
+                "faster",
+                "-crf",
+                "23",
+                "-tune",
+                "film",
+            ],
+        },
+        "webm": {
+            "vcodec": "libvpx-vp9",
+            "acodec": "libopus",
+            "extra_args": [
+                "-crf",
+                "30",
+                "-b:v",
+                "0",
+                "-row-mt",
+                "1",
+                "-deadline",
+                "good",
+                "-cpu-used",
+                "5",  # Max speed for VP9 software (0=slowest, 5=fastest)
+            ],
+        },
+        "mov": {
+            "vcodec": "libx264",
+            "acodec": "aac",
+            "extra_args": [
+                "-preset",
+                "faster",
+                "-crf",
+                "23",
+                "-movflags",
+                "+faststart",
+                "-tune",
+                "film",
+            ],
+        },
+    }
+
+    return configs.get(formato)
+
+
+def _ejecutar_ffmpeg_video(cmd, formato, use_gpu):
+    """Runs an FFmpeg video conversion command. Returns True on success.
+
+    If a GPU command fails, returns False so the caller can retry with software.
+    """
+    logger.info(f"Converting video to {formato} ({'GPU' if use_gpu else 'CPU'})...")
+    result = subprocess.run(
+        cmd, capture_output=True, encoding="utf-8", errors="replace"
+    )
+
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        if stderr:
+            # Only log meaningful lines (skip progress stats)
+            error_lines = [
+                l
+                for l in stderr.splitlines()
+                if not l.strip().startswith("frame=")
+                and "speed=" not in l
+                and "bitrate=" not in l
+            ]
+            if error_lines:
+                logger.error(f"FFmpeg conversion error: {' | '.join(error_lines[-5:])}")
+        return False
+
+    return True
+
+
 def _convertir_video_ffmpeg(archivo_origen, archivo_destino, formato):
     """Converts a video to the specified format using FFmpeg.
 
-    Optimized for speed and CPU usage while maintaining quality.
-    Includes audio/video sync fixes and hardware acceleration support.
+    Uses GPU acceleration (NVIDIA NVENC / AMD AMF / Intel QSV) when available,
+    with automatic fallback to optimized software encoding.
+    Stderr is captured to prevent harmless decoder warnings in the console.
     """
     try:
         if not os.path.exists(archivo_origen):
             logger.error(f"Source file not found: {archivo_origen}")
             return False
 
-        formato_config = {
-            "mp4": {
-                "vcodec": "libx264",
-                "acodec": "aac",
-                "extra_args": [
-                    "-preset",
-                    "faster",  # Faster encoding, less CPU
-                    "-crf",
-                    "23",  # Quality control (18-28, 23 is good balance)
-                    "-movflags",
-                    "+faststart",  # Web optimization
-                    "-tune",
-                    "film",  # Optimize for film/video content
-                    "-x264-params",
-                    "ref=4:bframes=2",  # Balanced encoding params
-                ],
-            },
-            "mkv": {
-                "vcodec": "libx264",
-                "acodec": "aac",
-                "extra_args": [
-                    "-preset",
-                    "faster",
-                    "-crf",
-                    "23",
-                ],
-            },
-            "webm": {
-                "vcodec": "libxvid",
-                "acodec": "libmp3lame",
-                "extra_args": [
-                    "-qscale:v",
-                    "3",
-                    "-mbd",
-                    "2",
-                ],
-            },
-            "mov": {
-                "vcodec": "libx264",
-                "acodec": "aac",
-                "extra_args": [
-                    "-preset",
-                    "faster",
-                    "-crf",
-                    "23",
-                    "-movflags",
-                    "+faststart",
-                    "-tune",
-                    "film",
-                    "-x264-params",
-                    "ref=4:bframes=2",
-                ],
-            },
-        }
+        archivo_origen = os.path.abspath(archivo_origen)
+        archivo_destino = os.path.abspath(archivo_destino)
 
-        config = formato_config.get(formato.lower())
+        # Detect GPU encoder
+        gpu = _detectar_gpu_encoder()
+        config = _obtener_config_formato_video(formato.lower(), gpu)
+
         if not config:
             logger.error(f"Unsupported video format: {formato}")
             return False
 
-        archivo_origen = os.path.abspath(archivo_origen)
-        archivo_destino = os.path.abspath(archivo_destino)
-
-        # Base command with optimizations for speed and sync
-        cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-stats",
-            # Hardware acceleration (fallback gracefully if not available)
-            "-hwaccel",
-            "auto",
-            "-i",
-            archivo_origen,
-            # Fix audio/video sync issues
-            "-fflags",
-            "+genpts",  # Generate presentation timestamps
-            "-async",
-            "1",  # Audio sync method
-            "-vsync",
-            "cfr",  # Constant frame rate for better sync
-            # Video codec
-            "-c:v",
-            config["vcodec"],
-            # Audio codec
-            "-c:a",
-            config["acodec"],
-            "-b:a",
-            "192k",  # Good audio bitrate
-            "-ar",
-            "48000",  # Standard audio sample rate
-        ]
-
-        # Add format-specific args
-        cmd.extend(config["extra_args"])
-
-        # Add max interleaving to prevent desync
-        cmd.extend(
-            [
-                "-max_interleave_delta",
-                "0",
-                "-max_muxing_queue_size",
-                "1024",
-                # Thread optimization
-                "-threads",
-                "0",  # Auto-detect optimal thread count
-                "-y",
-                archivo_destino,
+        def _build_cmd(cfg, is_gpu=False):
+            cmd = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                archivo_origen,
+                # Sync fixes
+                "-fflags",
+                "+genpts",
+                "-af",
+                "aresample=async=1",
+                "-fps_mode",
+                "cfr",
             ]
-        )
+            # GPU encoders (NVENC/AMF/QSV) require yuv420p pixel format
+            if is_gpu:
+                cmd.extend(["-pix_fmt", "yuv420p"])
+            # Codecs
+            cmd.extend(
+                [
+                    "-c:v",
+                    cfg["vcodec"],
+                    "-c:a",
+                    cfg["acodec"],
+                    "-b:a",
+                    "192k",
+                    "-ar",
+                    "48000",
+                ]
+            )
+            cmd.extend(cfg["extra_args"])
+            cmd.extend(
+                [
+                    "-max_interleave_delta",
+                    "0",
+                    "-max_muxing_queue_size",
+                    "1024",
+                    "-threads",
+                    "0",
+                    "-y",
+                    archivo_destino,
+                ]
+            )
+            return cmd
 
-        logger.info(f"Converting video to {formato} (optimized)...")
-        result = subprocess.run(
-            cmd, capture_output=False, encoding="utf-8", errors="replace"
-        )
+        # Try GPU encoding first (if available and applicable)
+        use_gpu = gpu is not None and formato.lower() in ("mp4", "mkv", "mov")
+        cmd = _build_cmd(config, is_gpu=use_gpu)
 
-        if result.returncode != 0:
-            logger.error(f"FFmpeg error")
-            return False
+        if _ejecutar_ffmpeg_video(cmd, formato, use_gpu):
+            logger.info(
+                f"Video converted successfully to {formato}"
+                f" ({'GPU' if use_gpu else 'CPU'})"
+            )
+            return True
 
-        logger.info(f"Video converted successfully to {formato}")
-        return True
+        # If GPU failed, retry with software encoding
+        if use_gpu:
+            logger.warning(
+                f"GPU encoding failed for {formato}, retrying with software encoder..."
+            )
+            sw_config = _obtener_config_formato_video(formato.lower(), gpu=None)
+            if sw_config:
+                cmd = _build_cmd(sw_config, is_gpu=False)
+                if _ejecutar_ffmpeg_video(cmd, formato, False):
+                    logger.info(
+                        f"Video converted successfully to {formato} (CPU fallback)"
+                    )
+                    return True
+
+        logger.error(f"FFmpeg conversion failed for {formato}")
+        return False
 
     except FileNotFoundError:
         logger.error("FFmpeg is not installed or not in PATH")
@@ -1649,6 +1852,92 @@ def _obtener_info_playlist_spotify(url):
         return None
 
 
+def _obtener_info_playlist_spotify_album(url):
+    """Gets information from a Spotify album (treated as a playlist)."""
+    global sp
+    if not sp:
+        logger.error("Spotify client not available")
+        return None
+
+    try:
+        album_id = url.split("/album/")[1].split("?")[0].split("/")[0]
+        logger.info(f"Getting Spotify album info: {album_id}")
+        album = sp.album(album_id)
+
+        if not album:
+            return None
+
+        artistas = [a["name"] for a in album.get("artists", [])]
+        album_artist = ", ".join(artistas) if artistas else "Desconocido"
+
+        album_info = {
+            "titulo": album.get("name", "Album sin título"),
+            "descripcion": "",
+            "autor": album_artist,
+            "total": album.get("total_tracks", 0),
+            "thumbnail": (
+                album.get("images", [{}])[0].get("url", "")
+                if album.get("images")
+                else ""
+            ),
+            "items": [],
+        }
+
+        # Get all tracks from the album
+        offset = 0
+        limit = 50
+        while True:
+            results = sp.album_tracks(album_id, offset=offset, limit=limit)
+            if not results or not results.get("items"):
+                break
+
+            for track in results["items"]:
+                if not track:
+                    continue
+                track_id = track.get("id", "")
+                if not track_id:
+                    continue
+
+                artists = track.get("artists", [])
+                artist_name = ", ".join(
+                    [a.get("name", "") for a in artists if a.get("name")]
+                )
+                duration_ms = track.get("duration_ms", 0)
+                duration_seconds = duration_ms // 1000
+                minutes = duration_seconds // 60
+                seconds = duration_seconds % 60
+                duration_str = f"{minutes}:{seconds:02d}"
+
+                # Use the album's cover art for all tracks
+                thumbnail = album_info["thumbnail"]
+                track_url = f"https://open.spotify.com/track/{track_id}"
+
+                track_item = {
+                    "id": track_id,
+                    "titulo": track.get("name", "Sin título"),
+                    "url": track_url,
+                    "duracion": duration_str,
+                    "duracion_segundos": duration_seconds,
+                    "thumbnail": thumbnail,
+                    "autor": artist_name,
+                }
+                album_info["items"].append(track_item)
+
+            if not results.get("next"):
+                break
+            offset += limit
+
+        album_info["total"] = len(album_info["items"])
+        logger.info(
+            f"Spotify album obtained: '{album_info['titulo']}' with {album_info['total']} tracks"
+        )
+        return album_info
+
+    except Exception as e:
+        logger.error(f"Error getting Spotify album: {e}")
+        return None
+
+
 # ============================================
 # Playlist Functions
 # ============================================
@@ -1721,6 +2010,9 @@ def obtener_info_playlist(url):
     try:
         if "spotify.com" in url and "/playlist/" in url:
             return _obtener_info_playlist_spotify(url)
+
+        if "spotify.com" in url and "/album/" in url:
+            return _obtener_info_playlist_spotify_album(url)
 
         es_youtube_music = "music.youtube.com" in url
         playlist_id = None
@@ -1937,7 +2229,9 @@ def es_url_playlist(url):
         ):
             return True
 
-    if "spotify.com" in url_lower and "/playlist/" in url_lower:
+    if "spotify.com" in url_lower and (
+        "/playlist/" in url_lower or "/album/" in url_lower
+    ):
         return True
 
     return False
@@ -2040,6 +2334,27 @@ def _obtener_info_spotify(url):
                 "duracion": duracion,
                 "duracion_segundos": duracion_segundos,
                 "fuente": "spotify",
+            }
+        elif "/album/" in url:
+            album_id = url.split("/album/")[1].split("?")[0].split("/")[0]
+            album = sp.album(album_id)
+            if not album:
+                return None
+
+            artistas = [a["name"] for a in album.get("artists", [])]
+            autor = ", ".join(artistas) if artistas else "Desconocido"
+            images = album.get("images", [])
+            thumbnail = images[0]["url"] if images else ""
+            total_tracks = album.get("total_tracks", 0)
+
+            return {
+                "titulo": album.get("name", "Sin título"),
+                "thumbnail": thumbnail,
+                "autor": autor,
+                "duracion": f"{total_tracks} tracks",
+                "duracion_segundos": 0,
+                "fuente": "spotify",
+                "es_playlist": True,
             }
         else:
             return None
@@ -2328,6 +2643,17 @@ def iniciar_descarga_selectiva(
                 item_format == "audio" if item_format else config.get("Descargar_audio")
             )
 
+            # Build per-item config with file format override
+            effective_config = config.copy()
+            item_file_format = item_config.get("fileFormat", None)
+            if item_file_format:
+                audio_formats = ["mp3", "m4a", "flac", "wav"]
+                video_formats = ["mp4", "mkv", "webm", "mov"]
+                if item_file_format in audio_formats:
+                    effective_config["Formato_audio"] = item_file_format
+                elif item_file_format in video_formats:
+                    effective_config["Formato_video"] = item_file_format
+
             if download_video:
                 if progress_callback:
                     percent = 15 + int(
@@ -2338,7 +2664,7 @@ def iniciar_descarga_selectiva(
                         "Downloading video...",
                         f"Item {i+1} of {len(urls_seleccionadas)}",
                     )
-                _descargar_video_interno(config, url, result, base_folder)
+                _descargar_video_interno(effective_config, url, result, base_folder)
                 result.completed_items += 1
 
             if download_audio:
@@ -2351,7 +2677,7 @@ def iniciar_descarga_selectiva(
                         "Downloading audio...",
                         f"Item {i+1} of {len(urls_seleccionadas)}",
                     )
-                _descargar_audio_interno(config, url, result, base_folder)
+                _descargar_audio_interno(effective_config, url, result, base_folder)
                 result.completed_items += 1
 
         fin = time.time()

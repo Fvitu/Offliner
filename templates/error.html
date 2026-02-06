@@ -1,6 +1,6 @@
 {% extends "./layout.html" %}
 
-{% block title %}Error - Offliner{% endblock %}
+{% block title %}{{ error_title or 'Error' }} - Offliner{% endblock %}
 
 {% block customCSS %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}" />
@@ -14,9 +14,21 @@
 	<div class="container">
 		<div class="error-container">
 			<div class="error-icon">
+				{% if error_code == 429 %}
+				<i class="fa-solid fa-clock text-warning"></i>
+				{% elif error_code == 404 %}
+				<i class="fa-solid fa-magnifying-glass"></i>
+				{% else %}
 				<i class="fa-solid fa-triangle-exclamation"></i>
+				{% endif %}
 			</div>
-			<h1 class="error-title">Oops! Something went wrong</h1>
+			{% if error_code %}
+			<div class="error-code mb-2">
+				<span class="badge bg-danger fs-5">Error {{ error_code }}</span>
+			</div>
+			{% endif %}
+			
+			<h1 class="error-title">{{ error_title or 'Oops! Something went wrong' }}</h1>
 
 			{% with messages = get_flashed_messages() %}
 			{% if messages %}
@@ -27,14 +39,47 @@
 				<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
 			</div>
 			{% endfor %}
-			{% else %}
-			<p class="error-message">
-				An unexpected error occurred. Please try again later or contact support if the problem persists.
-			</p>
 			{% endif %}
 			{% endwith %}
+			<p class="error-message">
+				{{ error_message or 'An unexpected error occurred. Please try again later or contact support if the problem persists.' }}
+			</p>
+			{% if error_details %}
+			<div class="alert alert-info mt-3">
+				<i class="fa-solid fa-info-circle me-2"></i>
+				{{ error_details }}
+			</div>
+			{% endif %}
+			{% if limits %}
+			<div class="card bg-dark border-warning mt-4 mb-4">
+				<div class="card-header bg-transparent border-warning">
+					<h5 class="mb-0 text-warning">
+						<i class="fa-solid fa-gauge me-2"></i>
+						Server Limits
+					</h5>
+				</div>
+				<div class="card-body">
+					<div class="row">
+						<div class="col-md-6 mb-3">
+							<h6 class="text-muted">Request Limits</h6>
+							<ul class="list-unstyled">
+								<li><i class="fa-solid fa-clock me-2 text-info"></i>Per Hour: <strong>{{ limits.requests_per_hour }}</strong></li>
+								<li><i class="fa-solid fa-calendar-day me-2 text-info"></i>Per Day: <strong>{{ limits.requests_per_day }}</strong></li>
+							</ul>
+						</div>
+						<div class="col-md-6 mb-3">
+							<h6 class="text-muted">Download Limits</h6>
+							<ul class="list-unstyled">
+								<li><i class="fa-solid fa-download me-2 text-success"></i>Per Hour: <strong>{{ limits.downloads_per_hour }}</strong></li>
+								<li><i class="fa-solid fa-download me-2 text-success"></i>Per Day: <strong>{{ limits.downloads_per_day }}</strong></li>
+							</ul>
+						</div>
+					</div>
+				</div>
+			</div>
+			{% endif %}
 
-			<div class="d-flex gap-3">
+			<div class="d-flex gap-3 justify-content-center">
 				<a href="{{ url_for('dashboard') }}" class="btn btn-primary">
 					<i class="fa-solid fa-home me-2"></i>Go to Dashboard
 				</a>

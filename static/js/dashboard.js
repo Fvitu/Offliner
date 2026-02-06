@@ -131,6 +131,119 @@ let mediaPreviewTimeout = null;
 let currentMediaInfo = null;
 let isProcessingInput = false;
 
+// ============================================
+// Unified Format Controls Generation
+// ============================================
+
+function createFormatControls(url, currentFormat) {
+	const currentConfig = getCurrentFormConfig();
+	const audioFormats = ["mp3", "m4a", "flac", "wav"];
+	const videoFormats = ["mp4", "mkv", "webm", "mov"];
+	const formats = currentFormat === "audio" ? audioFormats : videoFormats;
+	const globalFormat = currentFormat === "audio"
+		? (currentConfig.Formato_audio || "mp3")
+		: (currentConfig.Formato_video || "mp4");
+
+	return `
+		<div class="unified-format-controls">
+			<div class="btn-group btn-group-sm" role="group">
+				<button type="button" class="btn btn-outline-secondary format-btn-audio ${currentFormat === "audio" ? "active" : ""}" 
+						data-url="${url}" onclick="setItemFormatType(event, '${url}', 'audio')">
+					<i class="fa-solid fa-music"></i> Audio
+				</button>
+				<button type="button" class="btn btn-outline-secondary format-btn-video ${currentFormat === "video" ? "active" : ""}" 
+						data-url="${url}" onclick="setItemFormatType(event, '${url}', 'video')">
+					<i class="fa-solid fa-video"></i> Video
+				</button>
+			</div>
+			<div class="custom-dropdown ms-2" data-url="${url}">
+				<button type="button" class="custom-dropdown-toggle" onclick="toggleCustomDropdown(event)">
+					<span class="dropdown-value">${globalFormat.toUpperCase()}</span>
+					<i class="fa-solid fa-chevron-down"></i>
+				</button>
+				<div class="custom-dropdown-menu">
+					${formats.map((f) => `<div class="custom-dropdown-item${f === globalFormat ? " selected" : ""}" data-value="${f}" onclick="selectDropdownItem(event, '${url}')">${f.toUpperCase()}</div>`).join("")}
+				</div>
+			</div>
+		</div>
+	`;
+}
+
+function setItemFormatType(event, url, format) {
+	event.preventDefault();
+	event.stopPropagation();
+
+	// Update the format
+	if (url === "media-preview") {
+		mediaPreviewFormat = format;
+	} else {
+		itemCustomFormats.set(url, format);
+	}
+
+	// Update button states
+	const container = event.target.closest(".unified-format-controls");
+	if (container) {
+		const audioBtn = container.querySelector(".format-btn-audio");
+		const videoBtn = container.querySelector(".format-btn-video");
+
+		if (format === "audio") {
+			audioBtn?.classList.add("active");
+			videoBtn?.classList.remove("active");
+		} else {
+			videoBtn?.classList.add("active");
+			audioBtn?.classList.remove("active");
+		}
+	}
+
+	// Update file format dropdown
+	updateFileFormatDropdown(url, format);
+
+	const formatText = format.toUpperCase();
+	showToast(`Format set to ${formatText}`, "success");
+	return true;
+}
+
+function updateFileFormatDropdown(url, mediaType) {
+	const dropdown = document.querySelector(`.custom-dropdown[data-url="${url}"]`);
+	if (!dropdown) return;
+
+	const currentConfig = getCurrentFormConfig();
+	const audioFormats = ["mp3", "m4a", "flac", "wav"];
+	const videoFormats = ["mp4", "mkv", "webm", "mov"];
+
+	const currentValue = url === "media-preview" ? mediaPreviewFileFormat : itemFileFormats.get(url);
+	const menu = dropdown.querySelector(".custom-dropdown-menu");
+	const valueSpan = dropdown.querySelector(".dropdown-value");
+
+	const formats = mediaType === "audio" ? audioFormats : videoFormats;
+	const globalFormat = mediaType === "audio"
+		? (currentConfig.Formato_audio || "mp3")
+		: (currentConfig.Formato_video || "mp4");
+
+	// Clear and rebuild menu
+	menu.innerHTML = "";
+	formats.forEach((format) => {
+		const item = document.createElement("div");
+		item.className = "custom-dropdown-item" + (format === globalFormat && !currentValue ? " selected" : "");
+		item.dataset.value = format;
+		item.textContent = format.toUpperCase();
+		item.setAttribute("onclick", `selectDropdownItem(event, '${url}')`);
+		menu.appendChild(item);
+	});
+
+	// Restore previous value if still valid, otherwise use global config format
+	if (currentValue && formats.includes(currentValue)) {
+		valueSpan.textContent = currentValue.toUpperCase();
+	} else {
+		valueSpan.textContent = globalFormat.toUpperCase();
+		if (url === "media-preview") {
+			mediaPreviewFileFormat = null;
+		} else {
+			itemFileFormats.delete(url);
+		}
+	}
+}
+
 function showMediaPreview(info) {
 	const preview = document.getElementById("mediaPreview");
 	const content = document.getElementById("mediaPreviewContent");
@@ -147,33 +260,43 @@ function showMediaPreview(info) {
 	document.getElementById("mediaDuration").textContent = info.duracion || "0:00";
 
 	// Actualizar badge de fuente
-	const sourceBadge = document.getElementById("mediaSource");
-	sourceBadge.className = "source-badge " + (info.fuente || "youtube");
-
-	const sourceIcons = {
-		youtube: '<i class="fa-brands fa-youtube"></i> YouTube',
-		youtube_music: '<i class="fa-brands fa-youtube"></i> YouTube Music',
-		spotify: '<i class="fa-brands fa-spotify"></i> Spotify',
-	};
-	sourceBadge.innerHTML = sourceIcons[info.fuente] || sourceIcons.youtube;
-
-	// Initialize format controls
 	const currentConfig = getCurrentFormConfig();
-	const defaultFormat = currentConfig.Descargar_video ? "video" : "audio";
-	mediaPreviewFormat = defaultFormat;
+	const sourceBadge = document.getElementById("mediaSource");
 
-	const audioBtn = document.getElementById("mediaFormatAudio");
-	const videoBtn = document.getElementById("mediaFormatVideo");
-	if (defaultFormat === "audio") {
-		audioBtn?.classList.add("active");
-		videoBtn?.classList.remove("active");
+	// Determinar el texto y el icono según la configuración y la fuente
+	let sourceText, sourceIcon, sourceClass;
+
+	if (info.fuente === "spotify") {
+		sourceText = "Spotify";
+		sourceIcon = "fa-brands fa-spotify";
+		sourceClass = "spotify";
+	} else if (currentConfig.Preferir_YouTube_Music && info.fuente === "youtube_music") {
+		sourceText = "YT Music";
+		sourceIcon = "fa-brands fa-youtube";
+		sourceClass = "youtube_music";
+	} else if (currentConfig.Preferir_YouTube_Music && info.fuente === "youtube") {
+		sourceText = "YT Music";
+		sourceIcon = "fa-brands fa-youtube";
+		sourceClass = "youtube_music";
 	} else {
-		videoBtn?.classList.add("active");
-		audioBtn?.classList.remove("active");
+		sourceText = "YouTube";
+		sourceIcon = "fa-brands fa-youtube";
+		sourceClass = "youtube";
 	}
 
-	// Initialize file format dropdown
-	updateMediaFileFormatOptions(defaultFormat);
+	sourceBadge.className = "source-badge-inline " + sourceClass;
+	sourceBadge.innerHTML = `<i class="${sourceIcon}"></i> ${sourceText}`;
+
+	// Initialize format controls
+	const defaultFormat = currentConfig.Descargar_video ? "video" : "audio";
+	mediaPreviewFormat = defaultFormat;
+	mediaPreviewFileFormat = null;
+
+	// Generate unified controls using the same function as playlist items
+	const controlsContainer = document.getElementById("mediaPreviewControls");
+	if (controlsContainer) {
+		controlsContainer.innerHTML = createFormatControls("media-preview", defaultFormat);
+	}
 
 	// Mostrar preview con animación
 	preview.classList.add("visible");
@@ -224,9 +347,9 @@ async function fetchSponsorBlockForMediaPreview(info) {
 			const sbBadge = document.getElementById("mediaSBBadge");
 			const sbDuration = document.getElementById("mediaSBDuration");
 			if (sbBadge && sbDuration) {
-				sbBadge.style.display = "inline-block";
+				sbDuration.textContent = data.adjusted_duration_str || sbDuration.textContent || "SB";
+				sbBadge.style.display = "inline-flex";
 			}
-
 			// Show SponsorBlock indicator toast
 			showToast(`SponsorBlock: ${data.segment_count} segment(s) will be removed`, "info");
 		}
@@ -334,104 +457,24 @@ function selectDropdownItem(event, url) {
 	// Update display
 	valueSpan.textContent = item.textContent;
 
+	// Update selected state
+	dropdown.querySelectorAll(".custom-dropdown-item").forEach((i) => i.classList.remove("selected"));
+	item.classList.add("selected");
+
 	// Close dropdown
 	dropdown.classList.remove("active");
 
 	// Set the file format
-	setItemFileFormat(url, value);
+	if (url === "media-preview") {
+		mediaPreviewFileFormat = value;
+	} else {
+		setItemFileFormat(url, value);
+	}
 }
 
 // Media preview format controls
 let mediaPreviewFormat = null;
 let mediaPreviewFileFormat = null;
-
-document.getElementById("mediaFormatAudio")?.addEventListener("click", function () {
-	mediaPreviewFormat = "audio";
-	this.classList.add("active");
-	document.getElementById("mediaFormatVideo").classList.remove("active");
-	updateMediaFileFormatOptions("audio");
-	showToast("Format set to AUDIO", "success");
-});
-
-document.getElementById("mediaFormatVideo")?.addEventListener("click", function () {
-	mediaPreviewFormat = "video";
-	this.classList.add("active");
-	document.getElementById("mediaFormatAudio").classList.remove("active");
-	updateMediaFileFormatOptions("video");
-	showToast("Format set to VIDEO", "success");
-});
-
-// Initialize media file format dropdown
-function initMediaFileFormatDropdown() {
-	const dropdown = document.getElementById("mediaFileFormatDropdown");
-	if (!dropdown) return;
-
-	const toggle = dropdown.querySelector(".custom-dropdown-toggle");
-	const items = dropdown.querySelectorAll(".custom-dropdown-item");
-
-	toggle?.addEventListener("click", function (e) {
-		toggleCustomDropdown(e);
-	});
-
-	items.forEach((item) => {
-		item.addEventListener("click", function (e) {
-			e.preventDefault();
-			e.stopPropagation();
-
-			const value = this.dataset.value;
-			const valueSpan = dropdown.querySelector(".dropdown-value");
-
-			valueSpan.textContent = this.textContent;
-			dropdown.classList.remove("active");
-
-			mediaPreviewFileFormat = value === "default" ? null : value;
-		});
-	});
-}
-
-// Initialize on load
-document.addEventListener("DOMContentLoaded", initMediaFileFormatDropdown);
-
-function updateMediaFileFormatOptions(mediaType) {
-	const dropdown = document.getElementById("mediaFileFormatDropdown");
-	if (!dropdown) return;
-
-	const audioFormats = ["mp3", "m4a", "flac", "wav"];
-	const videoFormats = ["mp4", "mkv", "webm", "mov"];
-
-	const currentValue = mediaPreviewFileFormat;
-	const menu = dropdown.querySelector(".custom-dropdown-menu");
-	const valueSpan = dropdown.querySelector(".dropdown-value");
-
-	// Clear menu
-	menu.innerHTML = '<div class="custom-dropdown-item" data-value="default">Default Format</div>';
-
-	const formats = mediaType === "audio" ? audioFormats : videoFormats;
-	formats.forEach((format) => {
-		const item = document.createElement("div");
-		item.className = "custom-dropdown-item";
-		item.dataset.value = format;
-		item.textContent = format.toUpperCase();
-		item.addEventListener("click", function (e) {
-			e.preventDefault();
-			e.stopPropagation();
-
-			valueSpan.textContent = this.textContent;
-			dropdown.classList.remove("active");
-			mediaPreviewFileFormat = format;
-		});
-		menu.appendChild(item);
-	});
-
-	// Restore previous value if still valid
-	if (currentValue && currentValue !== "default" && formats.includes(currentValue)) {
-		valueSpan.textContent = currentValue.toUpperCase();
-		mediaPreviewFileFormat = currentValue;
-	} else {
-		valueSpan.textContent = "Default Format";
-		mediaPreviewFileFormat = null;
-	}
-}
 
 // ============================================
 // Toast System
@@ -568,7 +611,11 @@ let playlistCheckTimeout = null;
 function isPlaylistURL(url) {
 	if (!url) return false;
 	const urlLower = url.toLowerCase();
-	return urlLower.includes("list=") || urlLower.includes("/playlist") || (urlLower.includes("spotify.com") && urlLower.includes("/playlist/"));
+	return (
+		urlLower.includes("list=") ||
+		urlLower.includes("/playlist") ||
+		(urlLower.includes("spotify.com") && (urlLower.includes("/playlist/") || urlLower.includes("/album/")))
+	);
 }
 
 // Detección automática de URL al escribir
@@ -814,58 +861,55 @@ function showPlaylistSelector(playlist) {
 		const defaultFormat = currentConfig.Descargar_video ? "video" : "audio";
 		const itemFormat = item.customFormat || defaultFormat;
 
-		// File formats
-		const audioFormats = ["mp3", "m4a", "flac", "wav"];
-		const videoFormats = ["mp4", "mkv", "webm", "mov"];
-		const formats = itemFormat === "audio" ? audioFormats : videoFormats;
+		// Detect source from item URL
+		let sourceText, sourceIcon, sourceClass;
+		if (item.url && item.url.toLowerCase().includes("spotify.com")) {
+			sourceText = "Spotify";
+			sourceIcon = "fa-brands fa-spotify";
+			sourceClass = "spotify";
+		} else if (currentConfig.Preferir_YouTube_Music) {
+			sourceText = "YT Music";
+			sourceIcon = "fa-brands fa-youtube";
+			sourceClass = "youtube_music";
+		} else {
+			sourceText = "YouTube";
+			sourceIcon = "fa-brands fa-youtube";
+			sourceClass = "youtube";
+		}
+
+		const badgeHtml = `<span class="source-badge-inline ${sourceClass}"><i class="${sourceIcon}"></i> ${sourceText}</span>`;
 
 		html += `
-            <div class="playlist-item selected" data-url="${item.url}" data-duration="${item.duracion_segundos}" data-index="${index}">
-                <span class="badge bg-secondary playlist-item-number">${index + 1}</span>
-                <input type="checkbox" class="form-check-input playlist-item-checkbox" 
+            <div class="media-item selected" data-url="${item.url}" data-duration="${item.duracion_segundos}" data-index="${index}">
+                <span class="badge bg-secondary media-item-number">${index + 1}</span>
+                <input type="checkbox" class="form-check-input media-item-checkbox" 
                        checked data-url="${item.url}" 
                        onchange="togglePlaylistItem(this)">
-                <img src="${item.thumbnail || "https://via.placeholder.com/60x45?text=No+Image"}" 
-                     alt="${item.titulo}" class="playlist-item-thumbnail"
-                     onerror="this.src='https://via.placeholder.com/60x45?text=No+Image'">
-                <div class="playlist-item-info">
-                    <div class="playlist-item-title" title="${item.titulo}">${item.titulo}</div>
-                    <div class="playlist-item-meta">
+                <img src="${item.thumbnail || "https://via.placeholder.com/120x90?text=No+Image"}" 
+                     alt="${item.titulo}" class="media-item-thumbnail"
+                     onerror="this.src='https://via.placeholder.com/120x90?text=No+Image'">
+                <div class="media-item-info">
+                    <div class="media-item-title" title="${item.titulo}">${item.titulo}</div>
+                    <div class="media-item-meta">
+						${badgeHtml}
+                        <span class="mx-2">•</span>
+                        <i class="fa-solid fa-user me-1"></i>
+                        <span>${item.autor || "Unknown"}</span>
+                        <span class="mx-2">•</span>
                         <i class="fa-solid fa-clock me-1"></i>
                         <span class="item-duration" data-original="${item.duracion}">${item.duracion}</span>
-                        ${item.autor ? `• ${item.autor}` : ""}
-                    </div>
-                    <div class="playlist-item-badges mt-1">
-                        <span class="item-format-badge badge ${itemFormat === "video" ? "bg-info" : "bg-success"}" data-url="${item.url}">
-                            <i class="fa-solid fa-${itemFormat === "video" ? "video" : "music"}"></i>
-                            ${itemFormat === "video" ? "Video" : "Audio"}
-                        </span>
                         ${
 							item.video_id
-								? `<span class="item-sb-badge badge bg-warning text-dark" data-url="${item.url}" data-video-id="${item.video_id}" style="display:none;">
+								? `<span class="item-sb-badge-inline badge bg-warning text-dark ms-2" data-url="${item.url}" data-video-id="${item.video_id}" style="display:none;">
                             <i class="fa-solid fa-scissors"></i>
                             <span class="sb-duration">...</span>
                         </span>`
 								: ""
 						}
                     </div>
-                </div>
-                <div class="playlist-item-actions">
-                    <div class="custom-dropdown custom-dropdown-sm" data-url="${item.url}">
-                        <button type="button" class="custom-dropdown-toggle" onclick="toggleCustomDropdown(event)">
-                            <span class="dropdown-value">Default</span>
-                            <i class="fa-solid fa-chevron-down"></i>
-                        </button>
-                        <div class="custom-dropdown-menu">
-                            <div class="custom-dropdown-item" data-value="default" onclick="selectDropdownItem(event, '${item.url}')">Default</div>
-                            ${formats.map((f) => `<div class="custom-dropdown-item" data-value="${f}" onclick="selectDropdownItem(event, '${item.url}')">${f.toUpperCase()}</div>`).join("")}
-                        </div>
+                    <div class="media-item-controls mt-2">
+                        ${createFormatControls(item.url, itemFormat)}
                     </div>
-                    <button class="btn btn-sm btn-outline-secondary btn-config-item" 
-                            onclick="toggleItemFormat(event, '${item.url}')" 
-                            title="Toggle Audio/Video">
-                        <i class="fa-solid fa-repeat"></i>
-                    </button>
                 </div>
             </div>
         `;
@@ -886,7 +930,7 @@ function showPlaylistSelector(playlist) {
 
 function togglePlaylistItem(checkbox) {
 	const url = checkbox.dataset.url;
-	const item = checkbox.closest(".playlist-item");
+	const item = checkbox.closest(".media-item");
 
 	if (checkbox.checked) {
 		selectedItems.add(url);
@@ -951,94 +995,30 @@ function updateDownloadButton() {
 const itemCustomFormats = new Map(); // Store custom format for each item URL
 const itemFileFormats = new Map(); // Store file format (mp3, mp4, etc) for each item URL
 
-function toggleItemFormat(event, url) {
-	event.preventDefault();
-	event.stopPropagation();
-
-	if (!playlistData) return;
-
-	// Find item
-	const item = playlistData.items.find((i) => i.url === url);
-	if (!item) return;
-
-	// Toggle format
-	const currentConfig = getCurrentFormConfig();
-	const defaultFormat = currentConfig.Descargar_video ? "video" : "audio";
-	const currentFormat = itemCustomFormats.get(url) || defaultFormat;
-	const newFormat = currentFormat === "video" ? "audio" : "video";
-
-	// Store custom format
-	itemCustomFormats.set(url, newFormat);
-
-	// Update badge
-	const badge = document.querySelector(`.item-format-badge[data-url="${url}"]`);
-	if (badge) {
-		badge.className = `item-format-badge badge ${newFormat === "video" ? "bg-info" : "bg-success"}`;
-		badge.innerHTML = `<i class="fa-solid fa-${newFormat === "video" ? "video" : "music"}"></i> ${newFormat === "video" ? "Video" : "Audio"}`;
-	}
-
-	// Update file format dropdown options
-	updateFileFormatOptions(url, newFormat);
-
-	showToast(`Format changed to ${newFormat.toUpperCase()} for this item`, "info");
-}
-
-function updateFileFormatOptions(url, mediaType) {
-	const dropdown = document.querySelector(`.custom-dropdown[data-url="${url}"]`);
-	if (!dropdown) return;
-
-	const audioFormats = ["mp3", "m4a", "flac", "wav"];
-	const videoFormats = ["mp4", "mkv", "webm", "mov"];
-
-	const currentValue = itemFileFormats.get(url);
-	const menu = dropdown.querySelector(".custom-dropdown-menu");
-	const valueSpan = dropdown.querySelector(".dropdown-value");
-
-	// Clear menu
-	menu.innerHTML = '<div class="custom-dropdown-item" data-value="default" onclick="selectDropdownItem(event, \'' + url + "')\">Default</div>";
-
-	const formats = mediaType === "audio" ? audioFormats : videoFormats;
-	formats.forEach((format) => {
-		const item = document.createElement("div");
-		item.className = "custom-dropdown-item";
-		item.dataset.value = format;
-		item.textContent = format.toUpperCase();
-		item.setAttribute("onclick", `selectDropdownItem(event, '${url}')`);
-		menu.appendChild(item);
-	});
-
-	// Restore previous value if still valid
-	if (currentValue && currentValue !== "default" && formats.includes(currentValue)) {
-		valueSpan.textContent = currentValue.toUpperCase();
-	} else {
-		valueSpan.textContent = "Default";
-		itemFileFormats.delete(url);
-	}
-}
-
 function setItemFileFormat(url, format) {
-	if (format === "default") {
-		itemFileFormats.delete(url);
-	} else {
-		itemFileFormats.set(url, format);
-	}
+	itemFileFormats.set(url, format);
 }
 
 function getItemCustomFormats() {
 	// Return custom formats as object for submission
+	const currentConfig = getCurrentFormConfig();
 	const formats = {};
-	itemCustomFormats.forEach((format, url) => {
-		formats[url] = {
-			format: format,
-			fileFormat: itemFileFormats.get(url) || "default",
-		};
-	});
-	// Also include file formats for items without custom media format
-	itemFileFormats.forEach((fileFormat, url) => {
-		if (!formats[url]) {
-			formats[url] = { fileFormat: fileFormat };
-		}
-	});
+
+	// Build config for every item in the playlist
+	if (playlistData && playlistData.items) {
+		playlistData.items.forEach((item) => {
+			const url = item.url;
+			const mediaType = itemCustomFormats.get(url) || (currentConfig.Descargar_video ? "video" : "audio");
+			const globalFileFormat = mediaType === "audio" ? currentConfig.Formato_audio || "mp3" : currentConfig.Formato_video || "mp4";
+			const fileFormat = itemFileFormats.get(url) || globalFileFormat;
+
+			formats[url] = {
+				format: mediaType,
+				fileFormat: fileFormat,
+			};
+		});
+	}
+
 	return formats;
 }
 
@@ -1078,9 +1058,11 @@ async function fetchSponsorBlockForPlaylist(playlist) {
 
 			if (data.success && data.has_segments) {
 				// Update badge
-				const badge = document.querySelector(`.item-sb-badge[data-video-id="${item.video_id}"]`);
+				const badge = document.querySelector(
+					`.item-sb-badge-inline[data-video-id="${item.video_id}"], .item-sb-badge[data-video-id="${item.video_id}"]`,
+				);
 				if (badge) {
-					badge.style.display = "inline-block";
+					badge.style.display = "inline-flex";
 					const sbDuration = badge.querySelector(".sb-duration");
 					if (sbDuration) {
 						sbDuration.textContent = data.adjusted_duration_str;
@@ -1088,7 +1070,7 @@ async function fetchSponsorBlockForPlaylist(playlist) {
 				}
 
 				// Update duration in meta (show both)
-				const durationSpan = document.querySelector(`.playlist-item[data-index="${playlist.items.indexOf(item)}"] .item-duration`);
+				const durationSpan = document.querySelector(`.media-item[data-index="${playlist.items.indexOf(item)}"] .item-duration`);
 				if (durationSpan) {
 					const original = durationSpan.dataset.original;
 					durationSpan.innerHTML = `<span class="text-decoration-line-through text-muted">${original}</span> → ${data.adjusted_duration_str}`;
@@ -1106,9 +1088,9 @@ async function fetchSponsorBlockForPlaylist(playlist) {
 document.getElementById("selectAllBtn").addEventListener("click", function () {
 	if (!playlistData) return;
 
-	document.querySelectorAll(".playlist-item-checkbox").forEach((checkbox) => {
+	document.querySelectorAll(".media-item-checkbox").forEach((checkbox) => {
 		checkbox.checked = true;
-		checkbox.closest(".playlist-item").classList.add("selected");
+		checkbox.closest(".media-item").classList.add("selected");
 	});
 
 	selectedItems = new Set(playlistData.items.map((item) => item.url));
@@ -1117,9 +1099,9 @@ document.getElementById("selectAllBtn").addEventListener("click", function () {
 });
 
 document.getElementById("selectNoneBtn").addEventListener("click", function () {
-	document.querySelectorAll(".playlist-item-checkbox").forEach((checkbox) => {
+	document.querySelectorAll(".media-item-checkbox").forEach((checkbox) => {
 		checkbox.checked = false;
-		checkbox.closest(".playlist-item").classList.remove("selected");
+		checkbox.closest(".media-item").classList.remove("selected");
 	});
 
 	selectedItems.clear();
@@ -1127,58 +1109,128 @@ document.getElementById("selectNoneBtn").addEventListener("click", function () {
 	updateDownloadButton();
 });
 
-// Bulk actions for playlist
-document.getElementById("bulkSetAudio")?.addEventListener("click", function () {
+// ============================================
+// Bulk Actions Dropdown
+// ============================================
+
+function initBulkActionsDropdown() {
+	const dropdown = document.getElementById("bulkActionsDropdown");
+	if (!dropdown) return;
+
+	const toggle = dropdown.querySelector(".custom-dropdown-toggle");
+	const items = dropdown.querySelectorAll(".custom-dropdown-item");
+
+	toggle?.addEventListener("click", function (e) {
+		toggleCustomDropdown(e);
+	});
+
+	items.forEach((item) => {
+		item.addEventListener("click", function (e) {
+			e.preventDefault();
+			e.stopPropagation();
+
+			const action = this.dataset.action;
+			const format = this.dataset.format;
+
+			if (action === "audio") {
+				bulkSetAudio();
+			} else if (action === "video") {
+				bulkSetVideo();
+			} else if (action === "format" && format) {
+				bulkSetFormat(format);
+			}
+
+			dropdown.classList.remove("active");
+		});
+	});
+}
+
+// Initialize bulk actions on page load
+document.addEventListener("DOMContentLoaded", function () {
+	initBulkActionsDropdown();
+});
+
+function bulkSetAudio() {
 	if (!playlistData) return;
 	playlistData.items.forEach((item) => {
 		itemCustomFormats.set(item.url, "audio");
-		const badge = document.querySelector(`.item-format-badge[data-url="${item.url}"]`);
-		if (badge) {
-			badge.className = "item-format-badge badge bg-success";
-			badge.innerHTML = '<i class="fa-solid fa-music"></i> Audio';
+
+		// Update button states in unified controls
+		const container = document.querySelector(`.media-item[data-url="${item.url}"] .unified-format-controls`);
+		if (container) {
+			const audioBtn = container.querySelector(".format-btn-audio");
+			const videoBtn = container.querySelector(".format-btn-video");
+			audioBtn?.classList.add("active");
+			videoBtn?.classList.remove("active");
 		}
-		updateFileFormatOptions(item.url, "audio");
+
+		updateFileFormatDropdown(item.url, "audio");
 	});
 	showToast("All items set to AUDIO format", "success");
-});
+}
 
-document.getElementById("bulkSetVideo")?.addEventListener("click", function () {
+function bulkSetVideo() {
 	if (!playlistData) return;
 	playlistData.items.forEach((item) => {
 		itemCustomFormats.set(item.url, "video");
-		const badge = document.querySelector(`.item-format-badge[data-url="${item.url}"]`);
-		if (badge) {
-			badge.className = "item-format-badge badge bg-info";
-			badge.innerHTML = '<i class="fa-solid fa-video"></i> Video';
+
+		// Update button states in unified controls
+		const container = document.querySelector(`.media-item[data-url="${item.url}"] .unified-format-controls`);
+		if (container) {
+			const audioBtn = container.querySelector(".format-btn-audio");
+			const videoBtn = container.querySelector(".format-btn-video");
+			videoBtn?.classList.add("active");
+			audioBtn?.classList.remove("active");
 		}
-		updateFileFormatOptions(item.url, "video");
+
+		updateFileFormatDropdown(item.url, "video");
 	});
 	showToast("All items set to VIDEO format", "success");
-});
+}
 
-// Bulk file format actions
-document.querySelectorAll(".dropdown-menu [data-format]").forEach((btn) => {
-	btn.addEventListener("click", function () {
-		const format = this.dataset.format;
-		if (!playlistData) return;
+function bulkSetFormat(format) {
+	if (!playlistData) return;
 
-		playlistData.items.forEach((item) => {
-			const dropdown = document.querySelector(`.custom-dropdown[data-url="${item.url}"]`);
-			if (dropdown) {
-				const valueSpan = dropdown.querySelector(".dropdown-value");
-				const menu = dropdown.querySelector(".custom-dropdown-menu");
+	// Determine if format is audio or video
+	const audioFormats = ["mp3", "m4a", "flac", "wav"];
+	const videoFormats = ["mp4", "mkv", "webm"];
+	const isAudio = audioFormats.includes(format);
+	const targetType = isAudio ? "audio" : "video";
 
-				// Check if the format item exists in the dropdown menu
-				const formatItem = menu.querySelector(`[data-value="${format}"]`);
-				if (formatItem) {
-					valueSpan.textContent = format.toUpperCase();
-					setItemFileFormat(item.url, format);
+	playlistData.items.forEach((item) => {
+		// First, set the media type (audio/video) if needed
+		const currentFormat = itemCustomFormats.get(item.url);
+		if (currentFormat !== targetType) {
+			itemCustomFormats.set(item.url, targetType);
+
+			// Update button states in unified controls
+			const container = document.querySelector(`.media-item[data-url="${item.url}"] .unified-format-controls`);
+			if (container) {
+				const audioBtn = container.querySelector(".format-btn-audio");
+				const videoBtn = container.querySelector(".format-btn-video");
+				if (isAudio) {
+					audioBtn?.classList.add("active");
+					videoBtn?.classList.remove("active");
+				} else {
+					videoBtn?.classList.add("active");
+					audioBtn?.classList.remove("active");
 				}
 			}
-		});
-		showToast(`All items set to ${format.toUpperCase()} file format`, "success");
+
+			// Update dropdown options for the new type
+			updateFileFormatDropdown(item.url, targetType);
+		}
+
+		// Then set the specific file format
+		const dropdown = document.querySelector(`.custom-dropdown[data-url="${item.url}"]`);
+		if (dropdown) {
+			const valueSpan = dropdown.querySelector(".dropdown-value");
+			valueSpan.textContent = format.toUpperCase();
+			setItemFileFormat(item.url, format);
+		}
 	});
-});
+	showToast(`All items set to ${format.toUpperCase()} file format`, "success");
+}
 
 // Close playlist selector
 document.getElementById("closePlaylistBtn").addEventListener("click", function () {
@@ -1246,7 +1298,7 @@ document.getElementById("downloadForm").addEventListener("submit", function (eve
 	document.getElementById("userConfigInput").value = JSON.stringify(currentConfig);
 
 	// Add individual item configurations for playlist mode
-	if (isPlaylistMode && (itemCustomFormats.size > 0 || itemFileFormats.size > 0)) {
+	if (isPlaylistMode) {
 		const itemConfigs = getItemCustomFormats();
 
 		// Create or update hidden input for item configs

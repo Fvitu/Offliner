@@ -28,6 +28,38 @@ class Config:
     # Configuración de Flask
     MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # Limitar tamaño de uploads a 16MB
 
+    # ============================================
+    # Límites de Rate Limiting (Peticiones HTTP)
+    # ============================================
+    RATE_LIMIT_PER_DAY = int(os.getenv("RATE_LIMIT_PER_DAY", "200"))
+    RATE_LIMIT_PER_HOUR = int(os.getenv("RATE_LIMIT_PER_HOUR", "50"))
+
+    # Límites específicos por endpoint
+    RATE_LIMIT_SEARCH = os.getenv("RATE_LIMIT_SEARCH", "10 per minute")
+    RATE_LIMIT_PLAYLIST = os.getenv("RATE_LIMIT_PLAYLIST", "30 per minute")
+    RATE_LIMIT_MEDIA_INFO = os.getenv("RATE_LIMIT_MEDIA_INFO", "60 per minute")
+    RATE_LIMIT_DOWNLOAD = os.getenv("RATE_LIMIT_DOWNLOAD", "10 per minute")
+
+    # ============================================
+    # Límites de Descargas por Usuario
+    # ============================================
+    # Límite de archivos (videos/audios) descargados por usuario
+    MAX_DOWNLOADS_PER_HOUR = int(os.getenv("MAX_DOWNLOADS_PER_HOUR", "10"))
+    MAX_DOWNLOADS_PER_DAY = int(os.getenv("MAX_DOWNLOADS_PER_DAY", "50"))
+
+    # Límite de duración total de contenido descargado (en minutos)
+    MAX_DURATION_PER_HOUR = int(os.getenv("MAX_DURATION_PER_HOUR", "120"))  # 2 horas
+    MAX_DURATION_PER_DAY = int(os.getenv("MAX_DURATION_PER_DAY", "600"))  # 10 horas
+
+    # ============================================
+    # Límites de Contenido Individual
+    # ============================================
+    # Duración máxima permitida para un video o audio individual (en minutos)
+    MAX_CONTENT_DURATION = int(os.getenv("MAX_CONTENT_DURATION", "60"))  # 1 hora
+
+    # Límite máximo de items en una playlist
+    MAX_PLAYLIST_ITEMS = int(os.getenv("MAX_PLAYLIST_ITEMS", "100"))
+
 
 class DevelopmentConfig(Config):
     """Configuración para desarrollo."""

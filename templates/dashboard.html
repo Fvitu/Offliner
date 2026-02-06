@@ -69,7 +69,7 @@
                                     <button class="btn btn-outline-secondary bg-dark border-secondary" type="button" id="searchBtn">
                                         <i class="fa-solid fa-search text-muted"></i>
                                     </button>
-                                    <input type="text" class="form-control bg-dark border-secondary text-light"
+                                    <input type="url" class="form-control bg-dark border-secondary text-light"
                                            id="inputURL" name="inputURL"
                                            placeholder="URL or song name..."
                                            autocomplete="off">
@@ -86,52 +86,27 @@
                                     <span class="spinner-border spinner-border-sm me-2"></span>
                                     Getting info...
                                 </div>
-                                <div id="mediaPreviewContent" class="media-preview-content">
-                                    <img id="mediaThumbnail" src="" alt="Thumbnail" class="media-preview-thumbnail">
-                                    <div class="media-preview-info">
-                                        <div class="d-flex align-items-center gap-2 mb-1">
-                                            <span id="mediaSource" class="source-badge youtube">
+                                <div id="mediaPreviewContent" class="media-item">
+                                    <img id="mediaThumbnail" src="" alt="Thumbnail" class="media-item-thumbnail">
+                                    <div class="media-item-info">
+                                        <div id="mediaTitle" class="media-item-title">Video Title</div>
+                                        <div class="media-item-meta">
+                                            <span id="mediaSource" class="source-badge-inline youtube">
                                                 <i class="fa-brands fa-youtube"></i> YouTube
                                             </span>
-                                            <span id="mediaSBBadge" class="badge bg-warning text-dark" style="display:none;">
-                                                <i class="fa-solid fa-scissors"></i>
-                                                <span id="mediaSBDuration">SponsorBlock</span>
-                                            </span>
-                                        </div>
-                                        <div id="mediaTitle" class="media-preview-title">Video Title</div>
-                                        <div class="media-preview-meta">
+                                            <span class="mx-2">•</span>
                                             <i class="fa-solid fa-user me-1"></i>
                                             <span id="mediaAuthor">Author</span>
                                             <span class="mx-2">•</span>
                                             <i class="fa-solid fa-clock me-1"></i>
                                             <span id="mediaDuration">0:00</span>
+                                            <span id="mediaSBBadge" class="item-sb-badge-inline badge bg-warning text-dark ms-2" style="display:none;">
+                                                <i class="fa-solid fa-scissors"></i>
+                                                <span id="mediaSBDuration">SB</span>
+                                            </span>
                                         </div>
-                                        <div class="media-preview-controls mt-2">
-                                            <div class="btn-group btn-group-sm" role="group">
-                                                <button type="button" class="btn btn-outline-secondary" id="mediaFormatAudio">
-                                                    <i class="fa-solid fa-music"></i> Audio
-                                                </button>
-                                                <button type="button" class="btn btn-outline-secondary" id="mediaFormatVideo">
-                                                    <i class="fa-solid fa-video"></i> Video
-                                                </button>
-                                            </div>
-                                            <div class="custom-dropdown ms-2" id="mediaFileFormatDropdown">
-                                                <button type="button" class="custom-dropdown-toggle">
-                                                    <span class="dropdown-value">Default Format</span>
-                                                    <i class="fa-solid fa-chevron-down"></i>
-                                                </button>
-                                                <div class="custom-dropdown-menu">
-                                                    <div class="custom-dropdown-item" data-value="default">Default Format</div>
-                                                    <div class="custom-dropdown-item" data-value="mp3">MP3</div>
-                                                    <div class="custom-dropdown-item" data-value="m4a">M4A</div>
-                                                    <div class="custom-dropdown-item" data-value="flac">FLAC</div>
-                                                    <div class="custom-dropdown-item" data-value="wav">WAV</div>
-                                                    <div class="custom-dropdown-item" data-value="mp4">MP4</div>
-                                                    <div class="custom-dropdown-item" data-value="mkv">MKV</div>
-                                                    <div class="custom-dropdown-item" data-value="webm">WebM</div>
-                                                    <div class="custom-dropdown-item" data-value="mov">MOV</div>
-                                                </div>
-                                            </div>
+                                        <div class="media-item-controls mt-2" id="mediaPreviewControls">
+                                            <!-- Controls will be generated dynamically by JS -->
                                         </div>
                                     </div>
                                     <button type="button" class="btn btn-outline-secondary btn-sm" id="closeMediaPreview">
@@ -157,61 +132,72 @@
                                         <button type="button" class="btn btn-sm btn-outline-secondary" id="selectNoneBtn">
                                             <i class="fa-solid fa-xmark me-1"></i> Deselect All
                                         </button>
-                                        <div class="btn-group btn-group-sm ms-2" role="group">
-                                            <button type="button" class="btn btn-outline-primary dropdown-toggle" data-bs-toggle="dropdown">
-                                                <i class="fa-solid fa-gears me-1"></i> Bulk Actions
+                                        <div class="custom-dropdown ms-2" id="bulkActionsDropdown">
+                                            <button type="button" class="custom-dropdown-toggle">
+                                                <i class="fa-solid fa-gears me-1"></i>
+                                                <span class="dropdown-value">Bulk Actions</span>
+                                                <i class="fa-solid fa-chevron-down ms-1"></i>
                                             </button>
-                                            <ul class="dropdown-menu dropdown-menu-dark">
-                                                <li>
-                                                    <h6 class="dropdown-header">Set All To:</h6>
-                                                </li>
-                                                <li><button class="dropdown-item" id="bulkSetAudio"><i class="fa-solid fa-music me-2"></i>Audio</button></li>
-                                                <li><button class="dropdown-item" id="bulkSetVideo"><i class="fa-solid fa-video me-2"></i>Video</button></li>
-                                                <li>
-                                                    <hr class="dropdown-divider">
-                                                </li>
-                                                <li>
-                                                    <h6 class="dropdown-header">Audio Formats:</h6>
-                                                </li>
-                                                <li><button class="dropdown-item" data-format="mp3"><i class="fa-solid fa-file-audio me-2"></i>MP3</button></li>
-                                                <li><button class="dropdown-item" data-format="m4a"><i class="fa-solid fa-file-audio me-2"></i>M4A</button></li>
-                                                <li><button class="dropdown-item" data-format="flac"><i class="fa-solid fa-file-audio me-2"></i>FLAC</button></li>
-                                                <li><button class="dropdown-item" data-format="wav"><i class="fa-solid fa-file-audio me-2"></i>WAV</button></li>
-                                                <li>
-                                                    <hr class="dropdown-divider">
-                                                </li>
-                                                <li>
-                                                    <h6 class="dropdown-header">Video Formats:</h6>
-                                                </li>
-                                                <li><button class="dropdown-item" data-format="mp4"><i class="fa-solid fa-file-video me-2"></i>MP4</button></li>
-                                                <li><button class="dropdown-item" data-format="mkv"><i class="fa-solid fa-file-video me-2"></i>MKV</button></li>
-                                                <li><button class="dropdown-item" data-format="webm"><i class="fa-solid fa-file-video me-2"></i>WebM</button></li>
-                                                <li><button class="dropdown-item" data-format="mov"><i class="fa-solid fa-file-video me-2"></i>MOV</button></li>
-                                            </ul>
-                                        </div>
+                                            <div class="custom-dropdown-menu bulk-actions-menu">
+                                                <div class="dropdown-section-header">Set All To:</div>
+                                                <div class="custom-dropdown-item" data-action="audio">
+                                                    <i class="fa-solid fa-music me-2"></i>Audio
+                                                </div>
+                                                <div class="custom-dropdown-item" data-action="video">
+                                                    <i class="fa-solid fa-video me-2"></i>Video
+                                                </div>
+                                                <div class="dropdown-divider-custom"></div>
+                                                <div class="dropdown-section-header">Audio Formats:</div>
+                                                <div class="custom-dropdown-item" data-action="format" data-format="mp3">
+                                                    <i class="fa-solid fa-file-audio me-2"></i>MP3
+                                                </div>
+                                                <div class="custom-dropdown-item" data-action="format" data-format="m4a">
+                                                    <i class="fa-solid fa-file-audio me-2"></i>M4A
+                                                </div>
+                                                <div class="custom-dropdown-item" data-action="format" data-format="flac">
+                                                    <i class="fa-solid fa-file-audio me-2"></i>FLAC
+                                                </div>
+                                                <div class="custom-dropdown-item" data-action="format" data-format="wav">
+                                                    <i class="fa-solid fa-file-audio me-2"></i>WAV
+                                                </div>
+                                                <div class="dropdown-divider-custom"></div>
+                                                <div class="dropdown-section-header">Video Formats:</div>
+                                                <div class="custom-dropdown-item" data-action="format" data-format="mp4">
+                                                    <i class="fa-solid fa-file-video me-2"></i>MP4
+                                                </div>
+                                                <div class="custom-dropdown-item" data-action="format" data-format="mkv">
+                                                    <i class="fa-solid fa-file-video me-2"></i>MKV
+                                                </div>
+                                                <div class="custom-dropdown-item" data-action="format" data-format="webm">
+                                                    <i class="fa-solid fa-file-video me-2"></i>WebM
+                                                </div>
+                                                <div class="custom-dropdown-item" data-action="format" data-format="mov">
+                                                    <i class="fa-solid fa-file-video me-2"></i>MOV
+                                                </div>
+                                            </div>
+                                            </div>
                                         <button type="button" class="btn btn-sm btn-outline-danger ms-2" id="closePlaylistBtn">
                                             <i class="fa-solid fa-times"></i>
-                                        </button>
-                                    </div>
+                                        </button> </div>
                                 </div>
 
-                                <!-- Loading skeleton -->
+                                        <!-- Loading skeleton -->
                                 <div id="playlistLoading">
                                     <div class="skeleton skeleton-item"></div>
                                     <div class="skeleton skeleton-item"></div>
                                     <div class="skeleton skeleton-item"></div>
                                     <div class="skeleton skeleton-item"></div>
-                                    <div class="skeleton skeleton-item"></div>
+                                                    <div class="skeleton skeleton-item"></div>
                                 </div>
 
                                 <!-- Items container -->
                                 <div id="playlistItemsContainer" class="playlist-items-container" style="display: none;">
-                                    <!-- Los items se cargan dinámicamente -->
+                                                <!-- Los items se cargan dinámicamente -->
                                 </div>
 
                                 <!-- Selected count -->
                                 <div class="d-flex justify-content-between align-items-center mt-3 pt-3 border-top border-secondary">
-                                    <span class="text-muted">
+                                                    <span class="text-muted">
                                         <i class="fa-solid fa-check-circle text-success me-1"></i>
                                         <span id="selectedCount">0</span> of <span id="totalCount">0</span> selected
                                     </span>
@@ -220,29 +206,27 @@
                                         Total duration: <span id="totalDuration">00:00</span>
                                     </span>
                                 </div>
-                            </div>
-
-                            <!-- Barra de progreso -->
-                            <div id="progressContainer" class="mb-3" style="display: none;">
-                                <div class="d-flex justify-content-between mb-1">
-                                    <span id="progressStatus" class="text-light small">Starting download...</span>
-                                    <span id="progressPercentage" class="text-light small">0%</span>
+                                </div>
+                                
+                                <!-- Barra de progreso -->
+                                <div id="progressContainer" class="mb-3" style="display: none;">
+                                    <div class="d-flex justify-content-between mb-1">
+                                        <span id="progressStatus" class="text-light small">Starting download...</span> <span id="progressPercentage" class="text-light small">0%</span>
                                 </div>
                                 <div class="progress" style="height: 8px; border-radius: 4px;">
                                     <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-primary"
                                          role="progressbar" style="width: 0%;">
-                                    </div>
+                                                    </div>
                                 </div>
                                 <small id="progressDetail" class="text-muted mt-1 d-block"></small>
                             </div>
 
                             <button id="downloadBtn" type="submit" class="btn btn-primary btn-lg w-100">
                                 <i class="fa-solid fa-download me-2"></i>
-                                <span id="downloadBtnText">Start Download</span>
-                            </button>
+                                <span id="downloadBtnText">Start Download</span> </button>
                             <button id="downloadingBtn" type="button" class="btn btn-secondary btn-lg w-100" style="display: none" disabled>
                                 <span class="spinner-border spinner-border-sm me-2"></span>
-                                Processing...
+                                    Processing...
                             </button>
                         </form>
                     </div>
@@ -253,7 +237,7 @@
                     <span class="text-muted">
                         Created with <i class="fa-solid fa-heart text-danger"></i> by
                         <span class="text-light">Fvitu</span> &copy; {{ current_year }}
-                    </span>
+                        </span>
                 </footer>
             </div>
         </div>
@@ -270,17 +254,56 @@
             }
         };
     </script>
-    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+    <script>
+        (function () {
+            const userConfigInput = document.getElementById('userConfigInput');
+            function parseConfig() { try { return JSON.parse(userConfigInput.value || '{}'); } catch (e) { return {}; } }
+            function updateUserConfig() { const cfg = parseConfig(); const sel = document.querySelector('input[name="Tipo_descarga"]:checked'); if (sel) cfg.Tipo_descarga = sel.value; userConfigInput.value = JSON.stringify(cfg); }
 
-    <!-- Offcanvas Sidebar para Configuración -->
+            function refreshOptionCardSelection() {
+                document.querySelectorAll('.option-card').forEach(card => {
+                    const input = card.querySelector('input[type="radio"], input[type="checkbox"]');
+                    if (!input) return;
+                    if (input.type === 'radio') {
+                        const groupChecked = document.querySelector('input[name="' + input.name + '"]:checked');
+                        if (groupChecked && card.contains(groupChecked)) card.classList.add('selected'); else card.classList.remove('selected');
+                    } else {
+                        if (input.checked) card.classList.add('selected'); else card.classList.remove('selected');
+                    }
+                });
+            }
+
+            document.addEventListener('DOMContentLoaded', function () {
+                // wire up change handlers for Tipo_descarga and option-cards
+                document.querySelectorAll('input[name="Tipo_descarga"]').forEach(el => el.addEventListener('change', function (e) { updateUserConfig(); refreshOptionCardSelection(); }));
+                // wire up all inputs inside option-card to refresh selection classes
+                document.querySelectorAll('.option-card input[type="radio"], .option-card input[type="checkbox"]').forEach(i => i.addEventListener('change', refreshOptionCardSelection));
+
+                const saveBtn = document.getElementById('saveConfigBtn'); if (saveBtn) saveBtn.addEventListener('click', updateUserConfig);
+
+                if (window.APP_DATA && window.APP_DATA.config && window.APP_DATA.config.Tipo_descarga) {
+                    const v = window.APP_DATA.config.Tipo_descarga;
+                    const el = document.getElementById('tipo_' + v);
+                    if (el) el.checked = true;
+                } else {
+                    const defaultEl = document.getElementById('tipo_audio'); if (defaultEl) defaultEl.checked = true;
+                }
+                // ensure labels reflect current state
+                refreshOptionCardSelection();
+                updateUserConfig();
+            });
+        })();
+    </script>
+    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+<!-- Offcanvas Sidebar para Configuración -->
     <div class="offcanvas offcanvas-end offcanvas-config" tabindex="-1" id="configSidebar" aria-labelledby="configSidebarLabel">
         <div class="offcanvas-header">
             <h5 class="offcanvas-title" id="configSidebarLabel">
                 <i class="fa-solid fa-gear text-primary me-2"></i>
                 Download Settings
-            </h5>
-            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas" aria-label="Close"></button>
-        </div>
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+                </div>
         <div class="offcanvas-body">
             <form id="configForm">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" required />
@@ -301,11 +324,11 @@
                                        id="qualityMin" value="min">
                                 <span class="form-check-label">
                                     <i class="fa-solid fa-gauge-low text-success me-1"></i>
-                                    <strong>Minimum</strong>
+                                                <strong>Minimum</strong>
                                     <small class="d-block text-muted">64 kbps</small>
                                 </span>
-                            </div>
-                        </label>
+                                </div>
+                                </label>
                         <label class="option-card" data-config="Calidad_audio_video" data-value="avg">
                             <div class="form-check mb-0">
                                 <input class="form-check-input" type="radio" name="Calidad_audio_video"
@@ -316,21 +339,20 @@
                                     <small class="d-block text-muted">128 kbps</small>
                                 </span>
                             </div>
-                        </label>
-                        <label class="option-card" data-config="Calidad_audio_video" data-value="max">
-                            <div class="form-check mb-0">
-                                <input class="form-check-input" type="radio" name="Calidad_audio_video"
-                                       id="qualityMax" value="max">
-                                <span class="form-check-label">
-                                    <i class="fa-solid fa-gauge-high text-danger me-1"></i>
-                                    <strong>Maximum</strong>
-                                    <small class="d-block text-muted">320 kbps</small>
-                                </span>
+                            </label>
+                            <label class="option-card" data-config="Calidad_audio_video" data-value="max">
+                                <div class="form-check mb-0">
+                                    <input class="form-check-input" type="radio" name="Calidad_audio_video"
+                                           id="qualityMax" value="max">
+                                    <span class="form-check-label">
+                                        <i class="fa-solid fa-gauge-high text-danger me-1"></i>
+                                        <strong>Maximum</strong>
+                                        <small class="d-block text-muted">320 kbps</small>
+                                    </span>
+                                </div>
+                            </label>
                             </div>
-                        </label>
-                    </div>
-                </div>
-
+                            </div>
                 <!-- Formato de Audio -->
                 <div class="config-section">
                     <div class="config-section-title">
@@ -431,10 +453,10 @@
                     </div>
                     <div class="row g-2">
                         <div class="col-6">
-                            <label class="option-card w-100" data-config="Descargar_audio" data-value="true">
+                            <label class="option-card w-100" data-config="Tipo_descarga" data-value="audio">
                                 <div class="form-check mb-0">
-                                    <input class="form-check-input" type="checkbox" name="Descargar_audio"
-                                           id="downloadAudio">
+                                    <input class="form-check-input" type="radio" name="Tipo_descarga"
+                                           id="tipo_audio" value="audio">
                                     <span class="form-check-label">
                                         <i class="fa-solid fa-music text-primary me-1"></i>
                                         <strong>Audio</strong>
@@ -443,10 +465,10 @@
                             </label>
                         </div>
                         <div class="col-6">
-                            <label class="option-card w-100" data-config="Descargar_video" data-value="true">
+                            <label class="option-card w-100" data-config="Tipo_descarga" data-value="video">
                                 <div class="form-check mb-0">
-                                    <input class="form-check-input" type="checkbox" name="Descargar_video"
-                                           id="downloadVideo">
+                                    <input class="form-check-input" type="radio" name="Tipo_descarga"
+                                           id="tipo_video" value="video">
                                     <span class="form-check-label">
                                         <i class="fa-solid fa-video text-danger me-1"></i>
                                         <strong>Video</strong>
@@ -458,16 +480,14 @@
                             <label class="option-card w-100" data-config="Scrappear_metadata" data-value="true">
                                 <div class="form-check mb-0">
                                     <input class="form-check-input" type="checkbox" name="Scrappear_metadata"
-                                           id="scrapeMetadata">
-                                    <span class="form-check-label">
+                                           id="scrapeMetadata">               <span class="form-check-label">
                                         <i class="fa-solid fa-tags text-info me-1"></i>
                                         <strong>Add Metadata</strong>
-                                        <small class="d-block text-muted">Title, artist, cover art</small>
-                                    </span>
+                                        <small class="d-block text-muted">Title, artist, cover art</small> </span>
                                 </div>
                             </label>
-                        </div>
-                    </div>
+                            </div>
+                            </div>
                 </div>
 
                 <!-- YouTube Music -->
@@ -482,14 +502,13 @@
                             <input class="form-check-input" type="checkbox" name="Preferir_YouTube_Music"
                                    id="preferirYouTubeMusic">
                             <span class="form-check-label">
-                                <i class="fa-solid fa-wand-magic-sparkles text-info me-1"></i>
-                                <strong>Prefer YouTube Music audio</strong>
+                                <i class="fa-solid fa-wand-magic-sparkles text-info me-1"></i> <strong>Prefer YouTube Music audio</strong>
                                 <small class="d-block text-muted">
                                     Pure audio without extra video content.
                                 </small>
                             </span>
                         </div>
-                    </label>
+                        </label>
                 </div>
 
                 <!-- SponsorBlock -->

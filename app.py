@@ -44,11 +44,14 @@ def create_app(config_name="development"):
     # Initialize extensions
     CSRFProtect(app)
 
-    # Rate limiting to prevent abuse
+    # Rate limiting to prevent abuse - using configuration values
     limiter = Limiter(
         key_func=get_remote_address,
         app=app,
-        default_limits=["200 per day", "50 per hour"],
+        default_limits=[
+            f"{app.config['RATE_LIMIT_PER_DAY']} per day",
+            f"{app.config['RATE_LIMIT_PER_HOUR']} per hour",
+        ],
         storage_uri="memory://",
     )
 
@@ -112,8 +115,27 @@ def cleanup_temp_dirs(app):
 
         for path in (downloads_temp, downloads_zip):
             if os.path.exists(path):
-                shutil.rmtree(path, ignore_errors=True)
-                app.logger.info(f"Initial cleanup: {path} deleted.")
+                # Only remove and log if the directory actually contains files/subdirs
+                has_contents = False
+                if os.path.isdir(path):
+                    try:
+                        with os.scandir(path) as it:
+                            for _ in it:
+                                has_contents = True
+                                break
+                    except Exception:
+                        # If we can't scan the dir, fall back to listing
+                        try:
+                            has_contents = len(os.listdir(path)) > 0
+                        except Exception:
+                            has_contents = False
+                else:
+                    # If it's not a directory (unexpected), treat it as content
+                    has_contents = True
+
+                if has_contents:
+                    shutil.rmtree(path, ignore_errors=True)
+                    app.logger.info(f"Initial cleanup: {path} deleted.")
 
         # Recreate empty Temp directory
         os.makedirs(downloads_temp, exist_ok=True)

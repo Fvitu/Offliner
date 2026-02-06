@@ -172,30 +172,33 @@
     border-radius: 3px;
 }
 
-.playlist-item {
+/* ============================================
+   Unified Media Item - Used for both single videos and playlist items
+   ============================================ */
+.media-item {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    padding: 0.75rem;
+    gap: 1rem;
+    padding: 0.7rem;
     background: rgba(255, 255, 255, 0.02);
     border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 8px;
+    border-radius: 12px;
     margin-bottom: 0.5rem;
     transition: all 0.2s ease;
     position: relative;
 }
 
-.playlist-item:hover {
+.media-item:hover {
     background: rgba(255, 255, 255, 0.05);
     border-color: rgba(255, 255, 255, 0.15);
 }
 
-.playlist-item.selected {
+.media-item.selected {
     background: rgba(59, 130, 246, 0.1);
     border-color: rgba(59, 130, 246, 0.3);
 }
 
-.playlist-item-number {
+.media-item-number {
     font-size: 0.75rem;
     padding: 0.25rem 0.5rem;
     min-width: 30px;
@@ -203,52 +206,38 @@
     flex-shrink: 0;
 }
 
-.playlist-item-thumbnail {
-    width: 60px;
-    height: 45px;
-    border-radius: 4px;
+.media-item-checkbox {
+    flex-shrink: 0;
+}
+
+.media-item-thumbnail {
+    width: 100px;
+    height: 70px;
+    border-radius: 8px;
     object-fit: cover;
     flex-shrink: 0;
 }
 
-.playlist-item-info {
+.media-item-info {
     flex-grow: 1;
     min-width: 0;
 }
 
-.playlist-item-title {
-    font-size: 0.9rem;
-    font-weight: 500;
+.media-item-title {
+    font-weight: 600;
+    font-size: 1rem;
+    margin-bottom: 0.25rem;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    margin-bottom: 0.25rem;
 }
 
-.playlist-item-meta {
-    font-size: 0.75rem;
+.media-item-meta {
     color: #9ca3af;
-}
-
-.playlist-item-badges {
+    font-size: 0.85rem;
     display: flex;
-    gap: 0.35rem;
+    align-items: center;
     flex-wrap: wrap;
-    align-items: center;
-}
-
-.item-format-badge {
-    font-size: 0.65rem;
-    padding: 0.2rem 0.4rem;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    cursor: default;
-    transition: all 0.2s ease;
-}
-
-.item-format-badge i {
-    font-size: 0.7rem;
 }
 
 .item-sb-badge {
@@ -260,8 +249,24 @@
     animation: fadeIn 0.3s ease-in;
 }
 
-.item-sb-badge i {
+.item-sb-badge-inline {
+    font-size: 0.6rem;
+    padding: 0.15rem 0.3rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    animation: fadeIn 0.3s ease-in;
+}
+
+.item-sb-badge i,
+.item-sb-badge-inline i {
     font-size: 0.7rem;
+}
+
+.media-item-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
 }
 
 @keyframes fadeIn {
@@ -280,11 +285,41 @@
     display: inline-block;
 }
 
-.playlist-item-actions {
+/* Unified Format Controls - Used in both media preview and playlist items */
+.unified-format-controls {
     display: flex;
-    gap: 0.5rem;
-    flex-shrink: 0;
     align-items: center;
+    gap: 0.5rem;
+}
+
+.unified-format-controls .btn-group {
+    flex-shrink: 0;
+}
+
+.unified-format-controls .btn {
+    white-space: nowrap;
+    padding: 0.15rem 0.75rem;
+    font-size: 0.875rem;
+}
+
+.unified-format-controls .btn-sm {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.75rem;
+}
+
+/* Active state styling - same for both audio and video */
+.unified-format-controls .btn.active {
+    background: rgba(108, 117, 125, 0.3);
+    border-color: #6c757d;
+    color: #ffffff;
+}
+
+/* Unified controls container for both media preview and playlist items */
+.media-preview-controls,
+.media-item-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
 }
 
 .item-file-format {
@@ -409,67 +444,9 @@
     }
 }
 
-.media-preview-content {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-}
-
-.media-preview-thumbnail {
-    width: 120px;
-    height: 90px;
-    border-radius: 8px;
-    object-fit: cover;
-    flex-shrink: 0;
-}
-
-.media-preview-info {
-    flex-grow: 1;
-    min-width: 0;
-}
-
-.media-preview-title {
-    font-weight: 600;
-    font-size: 1rem;
-    margin-bottom: 0.25rem;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.media-preview-meta {
-    color: #9ca3af;
-    font-size: 0.85rem;
-}
-
-.media-preview-controls {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-}
-
-.media-preview-controls .btn-group {
-    flex-shrink: 0;
-}
-
-.media-preview-controls .btn {
-    padding: 0.25rem 0.75rem;
-    font-size: 0.75rem;
-}
-
-.media-preview-controls .form-select {
-    font-size: 0.75rem;
-    padding: 0.25rem 0.5rem;
-    background: rgba(255, 255, 255, 0.05);
-    border-color: rgba(255, 255, 255, 0.2);
-    color: #fff;
-}
-
-.media-preview-controls .form-select:focus {
-    background: rgba(255, 255, 255, 0.08);
-    border-color: rgba(59, 130, 246, 0.5);
-    color: #fff;
-    box-shadow: 0 0 0 0.2rem rgba(59, 130, 246, 0.25);
+/* Media preview uses the unified .media-item class now */
+.media-preview .media-item {
+    margin-bottom: 0;
 }
 
 .source-badge {
@@ -482,17 +459,30 @@
     font-weight: 500;
 }
 
-.source-badge.youtube {
+.source-badge-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+    font-size: 0.7rem;
+    font-weight: 500;
+}
+
+.source-badge.youtube,
+.source-badge-inline.youtube {
     background: rgba(255, 0, 0, 0.15);
     color: #ff4444;
 }
 
-.source-badge.youtube_music {
+.source-badge.youtube_music,
+.source-badge-inline.youtube_music {
     background: rgba(255, 0, 0, 0.15);
     color: #ff6666;
 }
 
-.source-badge.spotify {
+.source-badge.spotify,
+.source-badge-inline.spotify {
     background: rgba(30, 215, 96, 0.15);
     color: #1ed760;
 }
@@ -613,6 +603,11 @@
     color: #ffffff;
 }
 
+.custom-dropdown-item.selected {
+    background: rgba(13, 110, 253, 0.12);
+    color: #0d6efd;
+}
+
 .custom-dropdown-item:first-child {
     border-radius: 6px 6px 0 0;
 }
@@ -640,18 +635,45 @@
     background: rgba(255, 255, 255, 0.3);
 }
 
-/* Small variant for playlist items */
-.custom-dropdown-sm .custom-dropdown-toggle {
+/* Bulk Actions Dropdown */
+#bulkActionsDropdown .custom-dropdown-toggle {
+    background: rgba(13, 110, 253, 0.1);
+    border-color: rgba(13, 110, 253, 0.5);
+    color: #0d6efd;
     padding: 0.375rem 0.75rem;
-    min-width: 120px;
-    font-size: 0.8125rem;
+    min-width: 140px;
 }
 
-.custom-dropdown-sm .custom-dropdown-toggle .fa-chevron-down {
-    font-size: 0.7rem;
+#bulkActionsDropdown .custom-dropdown-toggle:hover {
+    background: rgba(13, 110, 253, 0.2);
+    border-color: #0d6efd;
 }
 
-.custom-dropdown-sm .custom-dropdown-item {
-    padding: 0.5rem 0.75rem;
-    font-size: 0.8125rem;
+.bulk-actions-menu {
+    min-width: 200px;
+}
+
+.dropdown-section-header {
+    color: #9ca3af;
+    font-size: 0.75rem;
+    padding: 0.5rem 1rem 0.25rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 600;
+    cursor: default;
+}
+
+.dropdown-divider-custom {
+    height: 1px;
+    margin: 0.5rem 0;
+    background: rgba(255, 255, 255, 0.1);
+}
+
+/* (download-source styling was reverted) */
+
+/* Ensure the main URL input shows the blue focus style like other inputs */
+#inputURL:focus {
+    border-color: rgba(13, 110, 253, 0.8) !important;
+    box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.25) !important;
+    outline: none !important;
 }

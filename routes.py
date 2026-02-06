@@ -21,12 +21,16 @@ from flask import (
     Response,
     stream_with_context,
 )
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from models.ModelFile import ModelFile, DEFAULT_CONFIG
+from config import get_config
 
 # Base directory for the application
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Get configuration
+app_config = get_config()
 
 
 # ============================================
@@ -82,6 +86,159 @@ class ProgressManager:
 progress_manager = ProgressManager()
 
 
+# ============================================
+# Download Tracker (tracks downloads per user/IP)
+# ============================================
+
+
+class DownloadTracker:
+    """Thread-safe tracker for user downloads with hourly and daily limits."""
+
+    def __init__(self):
+        self._downloads = {}  # {ip: {'hourly': [...], 'daily': [...]}}
+        self._lock = threading.Lock()
+
+    def _clean_old_entries(self, ip):
+        """Removes entries older than 1 hour and 1 day."""
+        now = datetime.utcnow()
+        one_hour_ago = now - timedelta(hours=1)
+        one_day_ago = now - timedelta(days=1)
+
+        if ip in self._downloads:
+            # Clean hourly entries
+            self._downloads[ip]["hourly"] = [
+                entry
+                for entry in self._downloads[ip]["hourly"]
+                if entry["timestamp"] > one_hour_ago
+            ]
+
+            # Clean daily entries
+            self._downloads[ip]["daily"] = [
+                entry
+                for entry in self._downloads[ip]["daily"]
+                if entry["timestamp"] > one_day_ago
+            ]
+
+    def check_limits(self, ip, duration_seconds=0):
+        """
+        Checks if the user has exceeded download limits.
+
+        Args:
+            ip: User's IP address
+            duration_seconds: Duration of the content to download
+
+        Returns:
+            dict: {
+                'allowed': bool,
+                'reason': str (if not allowed),
+                'limits': dict with current usage
+            }
+        """
+        with self._lock:
+            self._clean_old_entries(ip)
+
+            if ip not in self._downloads:
+                self._downloads[ip] = {"hourly": [], "daily": []}
+
+            hourly = self._downloads[ip]["hourly"]
+            daily = self._downloads[ip]["daily"]
+
+            # Count downloads
+            hourly_count = len(hourly)
+            daily_count = len(daily)
+
+            # Calculate total duration
+            hourly_duration = sum(entry.get("duration", 0) for entry in hourly)
+            daily_duration = sum(entry.get("duration", 0) for entry in daily)
+
+            # Check content duration limit
+            duration_minutes = duration_seconds / 60
+            if duration_minutes > app_config.MAX_CONTENT_DURATION:
+                return {
+                    "allowed": False,
+                    "reason": f"content_duration_exceeded",
+                    "max_allowed": app_config.MAX_CONTENT_DURATION,
+                    "requested": int(duration_minutes),
+                }
+
+            # Check hourly download count
+            if hourly_count >= app_config.MAX_DOWNLOADS_PER_HOUR:
+                return {
+                    "allowed": False,
+                    "reason": "hourly_downloads_exceeded",
+                    "current": hourly_count,
+                    "max_allowed": app_config.MAX_DOWNLOADS_PER_HOUR,
+                }
+
+            # Check daily download count
+            if daily_count >= app_config.MAX_DOWNLOADS_PER_DAY:
+                return {
+                    "allowed": False,
+                    "reason": "daily_downloads_exceeded",
+                    "current": daily_count,
+                    "max_allowed": app_config.MAX_DOWNLOADS_PER_DAY,
+                }
+
+            # Check hourly duration
+            hourly_duration_minutes = hourly_duration / 60
+            if (
+                hourly_duration_minutes + duration_minutes
+                > app_config.MAX_DURATION_PER_HOUR
+            ):
+                return {
+                    "allowed": False,
+                    "reason": "hourly_duration_exceeded",
+                    "current": int(hourly_duration_minutes),
+                    "requested": int(duration_minutes),
+                    "max_allowed": app_config.MAX_DURATION_PER_HOUR,
+                }
+
+            # Check daily duration
+            daily_duration_minutes = daily_duration / 60
+            if (
+                daily_duration_minutes + duration_minutes
+                > app_config.MAX_DURATION_PER_DAY
+            ):
+                return {
+                    "allowed": False,
+                    "reason": "daily_duration_exceeded",
+                    "current": int(daily_duration_minutes),
+                    "requested": int(duration_minutes),
+                    "max_allowed": app_config.MAX_DURATION_PER_DAY,
+                }
+
+            # All checks passed
+            return {
+                "allowed": True,
+                "limits": {
+                    "hourly_downloads": f"{hourly_count}/{app_config.MAX_DOWNLOADS_PER_HOUR}",
+                    "daily_downloads": f"{daily_count}/{app_config.MAX_DOWNLOADS_PER_DAY}",
+                    "hourly_duration": f"{int(hourly_duration_minutes)}/{app_config.MAX_DURATION_PER_HOUR} min",
+                    "daily_duration": f"{int(daily_duration_minutes)}/{app_config.MAX_DURATION_PER_DAY} min",
+                },
+            }
+
+    def record_download(self, ip, duration_seconds=0, item_count=1):
+        """Records a download for the user."""
+        with self._lock:
+            if ip not in self._downloads:
+                self._downloads[ip] = {"hourly": [], "daily": []}
+
+            now = datetime.utcnow()
+            entry = {"timestamp": now, "duration": duration_seconds}
+
+            # Record for both hourly and daily tracking
+            for _ in range(item_count):
+                self._downloads[ip]["hourly"].append(entry.copy())
+                self._downloads[ip]["daily"].append(entry.copy())
+
+            self._clean_old_entries(ip)
+
+
+# Global download tracker instance
+download_tracker = DownloadTracker()
+
+
 def register_routes(app, limiter):
     """Registers all application routes."""
 
@@ -104,7 +261,7 @@ def register_routes(app, limiter):
         return jsonify(DEFAULT_CONFIG)
 
     @app.route("/playlist_info", methods=["POST"])
-    @limiter.limit("30 per minute")
+    @limiter.limit(app_config.RATE_LIMIT_PLAYLIST)
     def playlist_info():
         """
         Gets information from a YouTube/YouTube Music/Spotify playlist.
@@ -122,7 +279,7 @@ def register_routes(app, limiter):
                 return (
                     jsonify(
                         {
-                            "error": "The URL doesn't appear to be a YouTube, YouTube Music, or Spotify playlist.",
+                            "error": "The URL doesn't appear to be a YouTube, YouTube Music, or Spotify playlist/album.",
                             "es_playlist": False,
                         }
                     ),
@@ -163,7 +320,7 @@ def register_routes(app, limiter):
             return jsonify({"error": "Error processing the playlist."}), 500
 
     @app.route("/verificar_playlist", methods=["POST"])
-    @limiter.limit("60 per minute")
+    @limiter.limit(app_config.RATE_LIMIT_MEDIA_INFO)
     def verificar_playlist():
         """
         Checks if a URL is a playlist without getting all information.
@@ -186,7 +343,7 @@ def register_routes(app, limiter):
             return jsonify({"es_playlist": False})
 
     @app.route("/search", methods=["POST"])
-    @limiter.limit("10 per minute")
+    @limiter.limit(app_config.RATE_LIMIT_SEARCH)
     def search_youtube():
         """
         Performs a YouTube search and returns the first 5 results.
@@ -321,7 +478,7 @@ def register_routes(app, limiter):
             return jsonify({"error": str(e)}), 500
 
     @app.route("/media_info", methods=["POST"])
-    @limiter.limit("60 per minute")
+    @limiter.limit(app_config.RATE_LIMIT_MEDIA_INFO)
     def media_info():
         """
         Gets basic information from an individual video/track.
@@ -371,7 +528,7 @@ def register_routes(app, limiter):
             return jsonify({"error": "Error processing the URL"}), 500
 
     @app.route("/sponsorblock_info", methods=["POST"])
-    @limiter.limit("60 per minute")
+    @limiter.limit(app_config.RATE_LIMIT_MEDIA_INFO)
     def sponsorblock_info():
         """
         Gets SponsorBlock information for a video.
@@ -422,7 +579,7 @@ def register_routes(app, limiter):
             return jsonify({"error": "Error processing SponsorBlock data"}), 500
 
     @app.route("/descargar", methods=["POST"])
-    @limiter.limit("10 per minute")
+    @limiter.limit(app_config.RATE_LIMIT_DOWNLOAD)
     def descargar():
         """Processes music/video download."""
         temp_dir = None
@@ -436,23 +593,10 @@ def register_routes(app, limiter):
             if not input_url and not is_playlist_mode:
                 return jsonify({"error": "Please enter a URL or song name."}), 400
 
-            selected_urls = []
-            if is_playlist_mode and selected_urls_json:
-                try:
-                    selected_urls = json.loads(selected_urls_json)
-                    if not selected_urls:
-                        return (
-                            jsonify(
-                                {"error": "Select at least one item from the playlist."}
-                            ),
-                            400,
-                        )
-                except json.JSONDecodeError:
-                    return jsonify({"error": "Error in playlist data."}), 400
+            # Get user IP for tracking
+            user_ip = request.remote_addr or "unknown"
 
-            task_id = str(uuid.uuid4())
-            progress_manager.create(task_id)
-
+            # Parse configuration
             try:
                 user_config = json.loads(config_json)
                 user_config = ModelFile.validate_config(user_config)
@@ -467,13 +611,85 @@ def register_routes(app, limiter):
             except json.JSONDecodeError:
                 item_configs = {}
 
-            nombre_archivo = f"descarga-{uuid.uuid4()}.zip"
+            selected_urls = []
+            total_duration = 0
+            item_count = 0
+
+            if is_playlist_mode and selected_urls_json:
+                try:
+                    selected_urls = json.loads(selected_urls_json)
+                    if not selected_urls:
+                        return (
+                            jsonify(
+                                {"error": "Select at least one item from the playlist."}
+                            ),
+                            400,
+                        )
+
+                    # Check playlist size limit
+                    if len(selected_urls) > app_config.MAX_PLAYLIST_ITEMS:
+                        return (
+                            jsonify(
+                                {
+                                    "error": f"Playlist exceeds maximum allowed items. Maximum: {app_config.MAX_PLAYLIST_ITEMS}, Selected: {len(selected_urls)}"
+                                }
+                            ),
+                            400,
+                        )
+
+                    # Calculate total duration from selected items
+                    item_count = len(selected_urls)
+                    for url_data in selected_urls:
+                        if isinstance(url_data, dict):
+                            total_duration += url_data.get("duracion_segundos", 0)
+
+                except json.JSONDecodeError:
+                    return jsonify({"error": "Error in playlist data."}), 400
+            else:
+                # Single item - get duration
+                item_count = 1
+                try:
+                    from logic import obtener_info_media
+
+                    media_info = obtener_info_media(input_url)
+                    if media_info:
+                        total_duration = media_info.get("duracion_segundos", 0)
+                except Exception as e:
+                    app.logger.warning(f"Could not get media duration: {e}")
+                    total_duration = 0
+
+            # Check download limits
+            limit_check = download_tracker.check_limits(user_ip, total_duration)
+
+            if not limit_check["allowed"]:
+                reason = limit_check["reason"]
+                error_messages = {
+                    "content_duration_exceeded": f"This content exceeds the maximum allowed duration. Maximum: {limit_check['max_allowed']} minutes, Requested: {limit_check['requested']} minutes.",
+                    "hourly_downloads_exceeded": f"You have exceeded the hourly download limit. Maximum: {limit_check['max_allowed']} downloads per hour. Current: {limit_check['current']}. Please try again later.",
+                    "daily_downloads_exceeded": f"You have exceeded the daily download limit. Maximum: {limit_check['max_allowed']} downloads per day. Current: {limit_check['current']}. Please try again tomorrow.",
+                    "hourly_duration_exceeded": f"Adding this content would exceed your hourly duration limit. Current: {limit_check['current']} minutes, Requested: {limit_check['requested']} minutes, Maximum: {limit_check['max_allowed']} minutes per hour.",
+                    "daily_duration_exceeded": f"Adding this content would exceed your daily duration limit. Current: {limit_check['current']} minutes, Requested: {limit_check['requested']} minutes, Maximum: {limit_check['max_allowed']} minutes per day.",
+                }
+
+                error_msg = error_messages.get(reason, "Download limit exceeded.")
+                app.logger.warning(f"Download limit exceeded for {user_ip}: {reason}")
+
+                return (
+                    jsonify(
+                        {"error": error_msg, "limit_exceeded": True, "reason": reason}
+                    ),
+                    429,  # Too Many Requests
+                )
+
+            task_id = str(uuid.uuid4())
+            progress_manager.create(task_id)
 
             def progress_callback(percent, status, detail=""):
                 progress_manager.update(
                     task_id, percent=percent, status=status, detail=detail
                 )
 
+            nombre_archivo = f"descarga-{uuid.uuid4()}.zip"
             temp_dir = os.path.join(BASE_DIR, "Downloads", "Temp", task_id)
 
             if os.path.exists(temp_dir):
@@ -513,9 +729,12 @@ def register_routes(app, limiter):
                 progress_manager.update(task_id, error="Could not download")
                 return jsonify({"error": "Could not download the file."}), 500
 
+            # Record successful download
+            download_tracker.record_download(user_ip, total_duration, item_count)
+
             nombre_archivo_final = os.path.basename(archivo_a_descargar)
             nombre_log = nombre_archivo_final.encode("ascii", "replace").decode("ascii")
-            app.logger.info(f"Download completed: {nombre_log}")
+            app.logger.info(f"Download completed: {nombre_log} for IP: {user_ip}")
 
             def cleanup_progress():
                 import time
@@ -590,19 +809,52 @@ def register_error_handlers(app):
     @app.errorhandler(404)
     def not_found(error):
         """Handles page not found."""
-        return render_template("error.html"), 404
+        return (
+            render_template(
+                "error.html",
+                error_code=404,
+                error_title="Page Not Found",
+                error_message="The page you're looking for doesn't exist.",
+            ),
+            404,
+        )
 
     @app.errorhandler(429)
     def ratelimit_handler(error):
         """Handles rate limit exceeded."""
-        flash("Too many requests. Please wait a moment.")
-        return redirect(url_for("dashboard"))
+        # Get current configuration for display
+        limits = {
+            "requests_per_hour": app_config.RATE_LIMIT_PER_HOUR,
+            "requests_per_day": app_config.RATE_LIMIT_PER_DAY,
+            "downloads_per_hour": app_config.MAX_DOWNLOADS_PER_HOUR,
+            "downloads_per_day": app_config.MAX_DOWNLOADS_PER_DAY,
+        }
+
+        return (
+            render_template(
+                "error.html",
+                error_code=429,
+                error_title="Too Many Requests",
+                error_message="You have exceeded the rate limit. Please wait a moment before trying again.",
+                error_details=f"Current limits: {limits['requests_per_hour']} requests per hour, {limits['requests_per_day']} per day.",
+                limits=limits,
+            ),
+            429,
+        )
 
     @app.errorhandler(500)
     def internal_error(error):
         """Handles internal server errors."""
         app.logger.error(f"Internal error: {error}")
-        return render_template("error.html"), 500
+        return (
+            render_template(
+                "error.html",
+                error_code=500,
+                error_title="Internal Server Error",
+                error_message="An unexpected error occurred. Please try again later.",
+            ),
+            500,
+        )
 
     @app.errorhandler(Exception)
     def handle_exception(e):
@@ -610,4 +862,12 @@ def register_error_handlers(app):
         if isinstance(e, HTTPException):
             return e
         app.logger.error(f"Unhandled exception: {e}")
-        return render_template("error.html"), 500
+        return (
+            render_template(
+                "error.html",
+                error_code=500,
+                error_title="Unexpected Error",
+                error_message="Something went wrong. Please try again later.",
+            ),
+            500,
+        )
