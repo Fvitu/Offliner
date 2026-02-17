@@ -9,14 +9,14 @@ logger = logging.getLogger(__name__)
 
 # Configuración por defecto para nuevos usuarios
 DEFAULT_CONFIG = {
-    "Client_ID": "f8068cf75621448184edc11474e60436",
-    "Secret_ID": "45415e7db4bc4068b6bcc926ff300a6f",
+    "Client_ID": "",
+    "Secret_ID": "",
     "Calidad_audio_video": "avg",
     "Formato_audio": "mp3",
     "Formato_video": "mp4",
     "Descargar_video": False,
     "Descargar_audio": True,
-    "Fuente_descarga": "YouTube",  # "YouTube" o "Spotify"
+    "Fuente_descarga": "YouTube",
     "Scrappear_metadata": True,
     "Mostrar_tiempo_de_ejecucion": True,
     "SponsorBlock_enabled": False,
@@ -24,6 +24,8 @@ DEFAULT_CONFIG = {
     # "sponsor", "intro", "outro", "selfpromo", "preview", "filler", "interaction", "music_offtopic"
     "SponsorBlock_categories": ["sponsor", "music_offtopic"],
     "Preferir_YouTube_Music": False,
+    "cookies_content": "",
+    "cookies_filepath": "",
 }
 
 
@@ -51,6 +53,17 @@ class ModelFile:
 
         if config_dict.get("Formato_video") in ["mp4", "mov", "mkv", "webm"]:
             validated["Formato_video"] = config_dict["Formato_video"]
+
+        # Preserve credentials and cookie sources when provided.
+        for text_field in [
+            "Client_ID",
+            "Secret_ID",
+            "cookies_content",
+            "cookies_filepath",
+        ]:
+            value = config_dict.get(text_field)
+            if isinstance(value, str):
+                validated[text_field] = value
 
         # Campos booleanos
         bool_fields = [

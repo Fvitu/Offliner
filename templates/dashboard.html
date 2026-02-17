@@ -1,184 +1,210 @@
 {% extends "./layout.html" %} {% block title %} Offliner {% endblock %} {% block customCSS %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}" />
 <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}" />
-{% endblock %} {% block body %}
+<!-- Toast Container -->
+<div id="toastContainer" class="toast-container position-fixed top-0 end-0 p-3" style="margin-top: 70px;"></div>
 
-<body class="bg-dark text-light">
-    <!-- Toast Container -->
-    <div id="toastContainer" class="toast-container position-fixed top-0 end-0 p-3" style="margin-top: 70px;"></div>
-
-    <nav class="navbar navbar-dark fixed-top navbar-glass">
-        <div class="container-fluid">
-            <a class="navbar-brand" href="{{url_for('dashboard')}}">
-                <i class="fa-duotone fa-down-to-bracket"></i> Offliner
-            </a>
+<nav class="navbar navbar-dark fixed-top navbar-glass">
+    <div class="container-fluid">
+        <a class="navbar-brand" href="{{url_for('dashboard')}}">
+            <i class="fa-duotone fa-down-to-bracket"></i> Offliner
+        </a>
+        <div class="ms-auto d-flex align-items-center">
+            <div class="dropdown">
+                <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button" id="langDropdown"
+                        data-bs-toggle="dropdown" aria-expanded="false" data-i18n-title="lang.switchTitle">
+                    <span id="currentLangFlag" aria-hidden="true">
+                        <img src="{{ url_for('static', filename='img/flags/us.svg') }}" alt="US" class="lang-flag" />
+                    </span>
+                    <span id="currentLangName" class="lang-name">English</span>
+                    <span class="visually-hidden" data-i18n="lang.switch">Language</span>
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end dropdown-menu-dark" aria-labelledby="langDropdown">
+                    <li>
+                        <button class="dropdown-item" type="button" data-lang="en">
+                            <img src="{{ url_for('static', filename='img/flags/us.svg') }}" alt="English" class="lang-flag me-2" />
+                            <span data-i18n="lang.english">English</span>
+                        </button>
+                    </li>
+                    <li>
+                        <button class="dropdown-item" type="button" data-lang="es">
+                            <img src="{{ url_for('static', filename='img/flags/es.svg') }}" alt="Español" class="lang-flag me-2" />
+                            <span data-i18n="lang.spanish">Español</span>
+                        </button>
+                    </li>
+                </ul>
+            </div>
         </div>
-    </nav>
+    </div>
+</nav>
 
-    <div class="container" style="padding-top: 100px;margin-bottom: 26vh;">
-        <h1 class="text-center mb-4">
-            <img src="https://em-content.zobj.net/source/animated-noto-color-emoji/356/waving-hand_1f44b.gif"
-                 alt="Waving hand" width="45px" />
-            Welcome to Offliner!
-        </h1>
+<div class="container" style="padding-top: 100px;margin-bottom: 26vh;">
+    <h1 class="text-center mb-4">
+        <img src="https://em-content.zobj.net/source/animated-noto-color-emoji/356/waving-hand_1f44b.gif"
+             alt="Waving hand" width="45px" />
+        <span data-i18n="hero.title">Welcome to Offliner!</span>
+    </h1>
 
-        <p class="text-center text-muted mb-4">
-            Easily download videos and audio from YouTube and Spotify. Your settings are saved locally in your browser.
-            <br><small class="text-success"><i class="fa-solid fa-lock me-1"></i>We do not store any of your data - your privacy is important.</small>
-        </p>
+    <p class="text-center text-muted mb-4">
+        <span data-i18n="hero.subtitle">Easily download videos and audio from YouTube and Spotify. Your settings are saved locally in your browser.</span>
+        <br>
+        <small class="text-success"><i class="fa-solid fa-lock me-1"></i><span data-i18n="hero.privacy">We do not store any of your data - your privacy is important.</span></small>
+    </p>
 
-        <div class="text-center mb-4">
-            <button class="btn btn-config-trigger btn-lg" type="button" data-bs-toggle="modal"
-                    data-bs-target="#configModal">
-                <i class="fa-solid fa-gear me-2"></i>
-                Download Settings
-            </button>
-        </div>
+    <div class="text-center mb-4">
+        <button class="btn btn-config-trigger btn-lg" type="button" data-bs-toggle="modal"
+                data-bs-target="#configModal">
+            <i class="fa-solid fa-gear me-2"></i>
+            <span data-i18n="btn.downloadSettings">Download Settings</span>
+        </button>
+    </div>
 
-        <div class="row justify-content-center">
-            <div class="col-lg-10">
-                <!-- Sección de Descarga -->
-                <div class="card bg-dark border-primary">
-                    <div class="card-header bg-transparent border-primary">
-                        <h5 class="mb-0">
-                            <i class="fa-solid fa-cloud-arrow-down text-primary me-2"></i>
-                            Download Songs and Videos
-                        </h5>
-                    </div>
-                    <div class="card-body">
-                        <p class="text-muted mb-4">
-                            Enter a YouTube/Spotify URL or a song name to start downloading.
-                        </p>
+    <div class="row justify-content-center">
+        <div class="col-lg-10">
+            <!-- Download Section -->
+            <div class="card bg-dark border-primary">
+                <div class="card-header bg-transparent border-primary">
+                    <h5 class="mb-0">
+                        <i class="fa-solid fa-cloud-arrow-down text-primary me-2"></i>
+                        <span data-i18n="download.sectionTitle">Download Songs and Videos</span>
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted mb-4">
+                        <span data-i18n="download.sectionHelp">Enter a YouTube/Spotify URL or a song name to start downloading.</span>
+                    </p>
 
-                        <form id="downloadForm" method="POST" action="#">
-                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" required />
-                            <input type="hidden" name="selected_urls" id="selectedUrlsInput" value="" />
-                            <input type="hidden" name="is_playlist_mode" id="isPlaylistModeInput" value="false" />
-                            <input type="hidden" name="user_config" id="userConfigInput" value="{}" />
+                    <form id="downloadForm" method="POST" action="#">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" required />
+                        <input type="hidden" name="selected_urls" id="selectedUrlsInput" value="" />
+                        <input type="hidden" name="is_playlist_mode" id="isPlaylistModeInput" value="false" />
+                        <input type="hidden" name="user_config" id="userConfigInput" value="{}" />
 
-                            <div class="mb-3">
-                                <div class="input-group input-group-lg">
-                                    <button class="btn btn-outline-secondary bg-dark border-secondary" type="button" id="searchBtn">
-                                        <i class="fa-solid fa-search text-muted"></i>
-                                    </button>
-                                    <input type="url" class="form-control bg-dark border-secondary text-light"
-                                           id="inputURL" name="inputURL"
-                                           placeholder="URL or song name..."
-                                           autocomplete="off">
-                                    <button class="btn btn-outline-secondary bg-dark border-secondary" type="button" id="pasteBtn" title="Paste from clipboard">
-                                        <i class="fa-solid fa-clipboard text-muted me-1"></i>
-                                        Paste
-                                    </button>
-                                </div>
-                                <small class="text-muted mt-1 d-block">
-                                    <i class="fa-solid fa-lightbulb text-warning me-1"></i>
-                                    Platform and content type (song or playlist) are automatically detected.
-                                </small>
+                        <div class="mb-3">
+                            <div class="input-group input-group-lg">
+                                <button class="btn btn-outline-secondary bg-dark border-secondary" type="button" id="searchBtn">
+                                    <i class="fa-solid fa-search text-muted"></i>
+                                </button>
+                                <input class="form-control bg-dark border-secondary text-light"
+                                       id="inputURL" name="inputURL"
+                                       placeholder="URL or song name..." data-i18n-placeholder="form.urlPlaceholder"
+                                       autocomplete="off">
+                                <button class="btn btn-outline-secondary bg-dark border-secondary" type="button" id="pasteBtn" title="Paste from clipboard" data-i18n-title="btn.pasteTitle">
+                                    <i class="fa-solid fa-clipboard text-muted me-1"></i>
+                                    <span data-i18n="btn.paste">Paste</span>
+                                </button>
                             </div>
+                            <small class="text-muted mt-1 d-block">
+                                <i class="fa-solid fa-lightbulb text-warning me-1"></i>
+                                <span data-i18n="download.autoDetect">Platform and content type (song or playlist) are automatically detected.</span>
+                            </small>
+                        </div>
 
-                            <!-- Media Preview (para videos/tracks individuales) -->
-                            <div id="mediaPreview" class="media-preview">
-                                <div id="mediaPreviewLoading" class="media-preview-loading" style="display: none;">
-                                    <span class="spinner-border spinner-border-sm me-2"></span>
-                                    Getting info...
+                        <!-- Media Preview (for single videos/tracks) -->
+                        <div id="mediaPreview" class="media-preview">
+                            <div id="mediaPreviewLoading" class="media-preview-loading" style="display: none;">
+                                <span class="spinner-border spinner-border-sm me-2"></span>
+                                <span data-i18n="media.gettingInfo">Getting info...</span>
+                            </div>
+                            <div id="mediaPreviewContent" class="media-item">
+                                <img id="mediaThumbnail" src="" alt="Thumbnail" class="media-item-thumbnail">
+                                <div class="media-item-info">
+                                    <div id="mediaTitle" class="media-item-title">Video Title</div>
+                                    <div class="media-item-meta">
+                                        <span id="mediaSource" class="source-badge-inline youtube">
+                                            <i class="fa-brands fa-youtube"></i> YouTube
+                                        </span>
+                                        <span class="mx-2">•</span>
+                                        <i class="fa-solid fa-user me-1"></i>
+                                        <span id="mediaAuthor">Author</span>
+                                        <span class="mx-2">•</span>
+                                        <i class="fa-solid fa-clock me-1"></i>
+                                        <span id="mediaDuration">0:00</span>
+                                        <span id="mediaSBBadge" class="item-sb-badge-inline badge bg-warning text-dark ms-2" style="display:none;">
+                                            <i class="fa-solid fa-scissors"></i>
+                                            <span id="mediaSBDuration">SB</span>
+                                        </span>
+                                    </div>
+                                    <div class="media-item-controls mt-2" id="mediaPreviewControls">
+                                        <!-- Controls will be generated dynamically by JS -->
+                                    </div>
                                 </div>
-                                <div id="mediaPreviewContent" class="media-item">
-                                    <img id="mediaThumbnail" src="" alt="Thumbnail" class="media-item-thumbnail">
-                                    <div class="media-item-info">
-                                        <div id="mediaTitle" class="media-item-title">Video Title</div>
-                                        <div class="media-item-meta">
-                                            <span id="mediaSource" class="source-badge-inline youtube">
-                                                <i class="fa-brands fa-youtube"></i> YouTube
-                                            </span>
-                                            <span class="mx-2">•</span>
-                                            <i class="fa-solid fa-user me-1"></i>
-                                            <span id="mediaAuthor">Author</span>
-                                            <span class="mx-2">•</span>
-                                            <i class="fa-solid fa-clock me-1"></i>
-                                            <span id="mediaDuration">0:00</span>
-                                            <span id="mediaSBBadge" class="item-sb-badge-inline badge bg-warning text-dark ms-2" style="display:none;">
-                                                <i class="fa-solid fa-scissors"></i>
-                                                <span id="mediaSBDuration">SB</span>
-                                            </span>
-                                        </div>
-                                        <div class="media-item-controls mt-2" id="mediaPreviewControls">
-                                            <!-- Controls will be generated dynamically by JS -->
+                                <button type="button" class="btn btn-outline-secondary btn-sm" id="closeMediaPreview">
+                                    <i class="fa-solid fa-times"></i>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Playlist Container (hidden by default) -->
+                        <div id="playlistContainer" class="playlist-container" style="display: none;">
+                            <div class="playlist-header">
+                                <div class="playlist-info">
+                                    <img id="playlistThumbnail" src="" alt="Playlist" class="playlist-thumbnail" style="display: none;">
+                                    <div>
+                                        <h6 id="playlistTitle" class="mb-1" data-i18n="playlist.loading">Loading playlist...</h6>
+                                        <small id="playlistMeta" class="text-muted"></small>
+                                    </div>
+                                </div>
+                                <div class="playlist-actions">
+                                    <button type="button" class="btn btn-sm btn-outline-success" id="selectAllBtn">
+                                        <i class="fa-solid fa-check-double me-1"></i> <span data-i18n="playlist.selectAll">Select All</span>
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" id="selectNoneBtn">
+                                        <i class="fa-solid fa-xmark me-1"></i> <span data-i18n="playlist.deselectAll">Deselect All</span>
+                                    </button>
+                                    <div class="custom-dropdown ms-2" id="bulkActionsDropdown">
+                                        <button type="button" class="custom-dropdown-toggle">
+                                            <i class="fa-solid fa-gears me-1"></i>
+                                            <span class="dropdown-value" data-i18n="playlist.bulkActions">Bulk Actions</span>
+                                            <i class="fa-solid fa-chevron-down ms-1"></i>
+                                        </button>
+                                        <div class="custom-dropdown-menu bulk-actions-menu">
+                                            <div class="dropdown-section-header" data-i18n="playlist.setAllTo">Set All To:</div>
+                                            <div class="custom-dropdown-item" data-action="audio">
+                                                <i class="fa-solid fa-music me-2"></i><span data-i18n="common.audio">Audio</span>
+                                            </div>
+                                            <div class="custom-dropdown-item" data-action="video">
+                                                <i class="fa-solid fa-video me-2"></i><span data-i18n="common.video">Video</span>
+                                            </div>
+                                            <div class="dropdown-divider-custom"></div>
+                                            <div class="dropdown-section-header" data-i18n="playlist.audioFormats">Audio Formats:</div>
+                                            <div class="custom-dropdown-item" data-action="format" data-format="mp3">
+                                                <i class="fa-solid fa-file-audio me-2"></i>MP3
+                                            </div>
+                                            <div class="custom-dropdown-item" data-action="format" data-format="m4a">
+                                                <i class="fa-solid fa-file-audio me-2"></i>M4A
+                                            </div>
+                                            <div class="custom-dropdown-item" data-action="format" data-format="flac">
+                                                <i class="fa-solid fa-file-audio me-2"></i>FLAC
+                                            </div>
+                                            <div class="custom-dropdown-item" data-action="format" data-format="wav">
+                                                <i class="fa-solid fa-file-audio me-2"></i>WAV
+                                            </div>
+                                            <div class="dropdown-divider-custom"></div>
+                                            <div class="dropdown-section-header" data-i18n="playlist.videoFormats">Video Formats:</div>
+                                            <div class="custom-dropdown-item" data-action="format" data-format="mp4">
+                                                <i class="fa-solid fa-file-video me-2"></i>MP4
+                                            </div>
+                                            <div class="custom-dropdown-item" data-action="format" data-format="mkv">
+                                                <i class="fa-solid fa-file-video me-2"></i>MKV
+                                            </div>
+                                            <div class="custom-dropdown-item" data-action="format" data-format="webm">
+                                                <i class="fa-solid fa-file-video me-2"></i>WebM
+                                            </div>
+                                            <div class="custom-dropdown-item" data-action="format" data-format="mov">
+                                                <i class="fa-solid fa-file-video me-2"></i>MOV
+                                            </div>
                                         </div>
                                     </div>
-                                    <button type="button" class="btn btn-outline-secondary btn-sm" id="closeMediaPreview">
+                                    <button type="button" class="btn btn-sm btn-outline-danger ms-2" id="closePlaylistBtn">
                                         <i class="fa-solid fa-times"></i>
                                     </button>
                                 </div>
                             </div>
 
-                            <!-- Contenedor de Playlist (oculto por defecto) -->
-                            <div id="playlistContainer" class="playlist-container" style="display: none;">
-                                <div class="playlist-header">
-                                    <div class="playlist-info">
-                                        <img id="playlistThumbnail" src="" alt="Playlist" class="playlist-thumbnail" style="display: none;">
-                                        <div>
-                                            <h6 id="playlistTitle" class="mb-1">Loading playlist...</h6>
-                                            <small id="playlistMeta" class="text-muted"></small>
-                                        </div>
-                                    </div>
-                                    <div class="playlist-actions">
-                                        <button type="button" class="btn btn-sm btn-outline-success" id="selectAllBtn">
-                                            <i class="fa-solid fa-check-double me-1"></i> Select All
-                                        </button>
-                                        <button type="button" class="btn btn-sm btn-outline-secondary" id="selectNoneBtn">
-                                            <i class="fa-solid fa-xmark me-1"></i> Deselect All
-                                        </button>
-                                        <div class="custom-dropdown ms-2" id="bulkActionsDropdown">
-                                            <button type="button" class="custom-dropdown-toggle">
-                                                <i class="fa-solid fa-gears me-1"></i>
-                                                <span class="dropdown-value">Bulk Actions</span>
-                                                <i class="fa-solid fa-chevron-down ms-1"></i>
-                                            </button>
-                                            <div class="custom-dropdown-menu bulk-actions-menu">
-                                                <div class="dropdown-section-header">Set All To:</div>
-                                                <div class="custom-dropdown-item" data-action="audio">
-                                                    <i class="fa-solid fa-music me-2"></i>Audio
-                                                </div>
-                                                <div class="custom-dropdown-item" data-action="video">
-                                                    <i class="fa-solid fa-video me-2"></i>Video
-                                                </div>
-                                                <div class="dropdown-divider-custom"></div>
-                                                <div class="dropdown-section-header">Audio Formats:</div>
-                                                <div class="custom-dropdown-item" data-action="format" data-format="mp3">
-                                                    <i class="fa-solid fa-file-audio me-2"></i>MP3
-                                                </div>
-                                                <div class="custom-dropdown-item" data-action="format" data-format="m4a">
-                                                    <i class="fa-solid fa-file-audio me-2"></i>M4A
-                                                </div>
-                                                <div class="custom-dropdown-item" data-action="format" data-format="flac">
-                                                    <i class="fa-solid fa-file-audio me-2"></i>FLAC
-                                                </div>
-                                                <div class="custom-dropdown-item" data-action="format" data-format="wav">
-                                                    <i class="fa-solid fa-file-audio me-2"></i>WAV
-                                                </div>
-                                                <div class="dropdown-divider-custom"></div>
-                                                <div class="dropdown-section-header">Video Formats:</div>
-                                                <div class="custom-dropdown-item" data-action="format" data-format="mp4">
-                                                    <i class="fa-solid fa-file-video me-2"></i>MP4
-                                                </div>
-                                                <div class="custom-dropdown-item" data-action="format" data-format="mkv">
-                                                    <i class="fa-solid fa-file-video me-2"></i>MKV
-                                                </div>
-                                                <div class="custom-dropdown-item" data-action="format" data-format="webm">
-                                                    <i class="fa-solid fa-file-video me-2"></i>WebM
-                                                </div>
-                                                <div class="custom-dropdown-item" data-action="format" data-format="mov">
-                                                    <i class="fa-solid fa-file-video me-2"></i>MOV
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <button type="button" class="btn btn-sm btn-outline-danger ms-2" id="closePlaylistBtn">
-                                            <i class="fa-solid fa-times"></i>
-                                        </button>
-                                        </div>
-                                </div>
-
-                                <!-- Loading skeleton -->
+                            <!-- Items container (contains loading skeletons so they share the same scroll) -->
+                            <div id="playlistItemsContainer" class="playlist-items-container" style="display: none;">
+                                <!-- Loading skeleton (moved here so skeletons are inside the scrollable area) -->
                                 <div id="playlistLoading">
                                     <div class="skeleton skeleton-item"></div>
                                     <div class="skeleton skeleton-item"></div>
@@ -186,512 +212,461 @@
                                     <div class="skeleton skeleton-item"></div>
                                     <div class="skeleton skeleton-item"></div>
                                 </div>
-
-                                <!-- Items container -->
-                                <div id="playlistItemsContainer" class="playlist-items-container" style="display: none;">
-                                    <!-- Los items se cargan dinámicamente -->
-                                </div>
-
-                                <!-- Selected count -->
-                                <div class="d-flex justify-content-between align-items-center mt-3 pt-3 border-top border-secondary">
-                                    <span class="text-muted">
-                                        <i class="fa-solid fa-check-circle text-success me-1"></i>
-                                        <span id="selectedCount">0</span> of <span id="totalCount">0</span> selected
-                                    </span>
-                                    <span class="text-muted small">
-                                        <i class="fa-solid fa-clock me-1"></i>
-                                        Total duration: <span id="totalDuration">00:00</span>
-                                    </span>
-                                </div>
-                            </div>
-                            
-                            <!-- Barra de progreso -->
-                            <div id="progressContainer" class="mb-3" style="display: none;">
-                                <div class="d-flex justify-content-between mb-1">
-                                    <span id="progressStatus" class="text-light small">Starting download...</span> <span id="progressPercentage" class="text-light small">0%</span>
-                                </div>
-                                <div class="progress" style="height: 8px; border-radius: 4px;">
-                                    <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-primary"
-                                         role="progressbar" style="width: 0%;">
-                                    </div>
-                                </div>
-                                <small id="progressDetail" class="text-muted mt-1 d-block"></small>
+                                <!-- Items are loaded dynamically -->
                             </div>
 
-                            <button id="downloadBtn" type="submit" class="btn btn-primary btn-lg w-100">
-                                <i class="fa-solid fa-download me-2"></i>
-                                <span id="downloadBtnText">Start Download</span> </button>
-                            <button id="downloadingBtn" type="button" class="btn btn-secondary btn-lg w-100" style="display: none" disabled>
-                                <span class="spinner-border spinner-border-sm me-2"></span>
-                                Processing...
-                            </button>
-                        </form>
-                    </div>
+                            <!-- Selected count -->
+                            <div class="d-flex justify-content-between align-items-center mt-3 pt-3 border-top border-secondary">
+                                <span class="text-muted">
+                                    <i class="fa-solid fa-check-circle text-success me-1"></i>
+                                    <span id="selectedCount">0</span> <span data-i18n="playlist.of">of</span> <span id="totalCount">0</span> <span data-i18n="playlist.selected">selected</span>
+                                </span>
+                                <span class="text-muted small">
+                                    <i class="fa-solid fa-clock me-1"></i>
+                                    <span data-i18n="playlist.totalDuration">Total duration:</span> <span id="totalDuration">00:00</span>
+                                </span>
+                            </div>
+                        </div>
+
+                        <!-- Progress bar -->
+                        <div id="progressContainer" class="mb-3" style="display: none; margin-top: 20px;">
+                            <div class="d-flex justify-content-between mb-1">
+                                <span id="progressStatus" class="text-light small" data-i18n="progress.startingDownload">Starting download...</span> <span id="progressPercentage" class="text-light small">0%</span>
+                            </div>
+                            <div class="progress" style="height: 8px; border-radius: 4px;">
+                                <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-primary"
+                                     role="progressbar" style="width: 0%;">
+                                </div>
+                            </div>
+                            <small id="progressDetail" class="text-muted mt-1 d-block"></small>
+                        </div>
+
+                        <button id="downloadBtn" type="submit" class="btn btn-primary btn-lg w-100">
+                            <i class="fa-solid fa-download me-2"></i>
+                            <span id="downloadBtnText" data-i18n="btn.startDownload">Start Download</span> </button>
+                        <button id="downloadingBtn" type="button" class="btn btn-secondary btn-lg w-100" style="display: none" disabled>
+                            <span class="spinner-border spinner-border-sm me-2"></span>
+                            <span data-i18n="progress.processing">Processing...</span>
+                        </button>
+                    </form>
                 </div>
-
-                <!-- Footer -->
-                <footer class="text-center mt-5 mb-4">
-                    <span class="text-muted">
-                        Created with <i class="fa-solid fa-heart text-danger"></i> by
-                        <span class="text-light">Fvitu</span> &copy; {{ current_year }}
-                    </span>
-                </footer>
             </div>
+
+            <!-- Footer -->
+            <footer class="text-center mt-5 mb-4">
+                <span class="text-muted">
+                    <span data-i18n="footer.createdWith">Created with</span> <i class="fa-solid fa-heart text-danger"></i> <span data-i18n="footer.by">by</span>
+                    <span class="text-light">Fvitu</span> &copy; {{ current_year }}
+                </span>
+            </footer>
         </div>
     </div>
+</div>
 
-    <!-- Legal Disclaimer Footer -->
-    <footer class="disclaimer-footer mt-auto py-3">
-        <div class="container">
-            <p class="text-center text-muted small mb-0">
-                <strong>Disclaimer:</strong> We are not responsible for the content downloaded using this tool.
+<!-- Legal Disclaimer Footer -->
+<footer class="disclaimer-footer mt-auto py-3">
+    <div class="container">
+        <p class="text-center text-muted small mb-0">
+            <span data-i18n-html="disclaimer.p1"><strong>Disclaimer:</strong> We are not responsible for the content downloaded using this tool.
                 Users must verify that the content is free of copyright restrictions and authorized for download
                 prior to initiating any transfer.
-                Copyrighted content is not available for download with this tool.
-            </p>
-            <p class="text-center text-muted small mb-0 mt-2">
-                By choosing to download, you acknowledge that the accessed content is for personal,
+                Copyrighted content is not available for download with this tool.</span>
+        </p>
+        <p class="text-center text-muted small mb-0 mt-2">
+            <span data-i18n-html="disclaimer.p2">By choosing to download, you acknowledge that the accessed content is for personal,
                 non-commercial use only. You agree not to distribute, copy, modify, or otherwise use the
                 downloaded content for commercial purposes, including but not limited to resale, public
                 performance, or broadcasting. Any use beyond this scope may violate applicable copyright laws
                 and Terms of Service. We assume no liability for unauthorized or improper use; the user assumes
-                full responsibility for compliance with all relevant laws and contractual obligations.
-            </p>
-        </div>
-    </footer>
+                full responsibility for compliance with all relevant laws and contractual obligations.</span>
+        </p>
+    </div>
+</footer>
 
-    <script>
-        window.APP_DATA = {
-            config: JSON.parse(`{{ config | tojson | safe }}`),
-            csrfToken: "{{ csrf_token() }}",
-            urls: {
-                search_youtube: "{{ url_for('search_youtube') }}",
-                playlist_info: "{{ url_for('playlist_info') }}",
-                descargar: "{{ url_for('descargar') }}"
-            }
-        };
-    </script>
-    <script>
-        (function () {
-            const userConfigInput = document.getElementById('userConfigInput');
-            function parseConfig() { try { return JSON.parse(userConfigInput.value || '{}'); } catch (e) { return {}; } }
-            function updateUserConfig() { const cfg = parseConfig(); const sel = document.querySelector('input[name="Tipo_descarga"]:checked'); if (sel) cfg.Tipo_descarga = sel.value; userConfigInput.value = JSON.stringify(cfg); }
+<script>
+    window.APP_DATA = {
+        config: JSON.parse(`{{ config | tojson | safe }}`),
+        csrfToken: "{{ csrf_token() }}",
+        urls: {
+            search_youtube: "{{ url_for('search_youtube') }}",
+            playlist_info: "{{ url_for('playlist_info') }}",
+            descargar: "{{ url_for('descargar') }}"
+        }
+    };
+</script>
+<script src="{{ url_for('static', filename='js/translations.js') }}"></script>
+<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+<!-- Settings Modal -->
+<div class="modal fade" id="configModal" tabindex="-1" aria-labelledby="configModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content bg-dark border-secondary">
+            <div class="modal-header border-secondary" style="background: rgba(0, 0, 0, 0.3);">
+                <h5 class="modal-title" id="configModalLabel">
+                    <i class="fa-solid fa-gear text-primary me-2"></i>
+                    <span data-i18n="btn.downloadSettings">Download Settings</span>
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <form id="configForm">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" required />
 
-            function refreshOptionCardSelection() {
-                document.querySelectorAll('.option-card').forEach(card => {
-                    const input = card.querySelector('input[type="radio"], input[type="checkbox"]');
-                    if (!input) return;
-                    if (input.type === 'radio') {
-                        const groupChecked = document.querySelector('input[name="' + input.name + '"]:checked');
-                        if (groupChecked && card.contains(groupChecked)) card.classList.add('selected'); else card.classList.remove('selected');
-                    } else {
-                        if (input.checked) card.classList.add('selected'); else card.classList.remove('selected');
-                    }
-                });
-            }
-
-            document.addEventListener('DOMContentLoaded', function () {
-                // wire up change handlers for Tipo_descarga and option-cards
-                document.querySelectorAll('input[name="Tipo_descarga"]').forEach(el => el.addEventListener('change', function (e) { updateUserConfig(); refreshOptionCardSelection(); }));
-                // wire up all inputs inside option-card to refresh selection classes
-                document.querySelectorAll('.option-card input[type="radio"], .option-card input[type="checkbox"]').forEach(i => i.addEventListener('change', refreshOptionCardSelection));
-
-                const saveBtn = document.getElementById('saveConfigBtn'); if (saveBtn) saveBtn.addEventListener('click', updateUserConfig);
-
-                if (window.APP_DATA && window.APP_DATA.config && window.APP_DATA.config.Tipo_descarga) {
-                    const v = window.APP_DATA.config.Tipo_descarga;
-                    const el = document.getElementById('tipo_' + v);
-                    if (el) el.checked = true;
-                } else {
-                    const defaultEl = document.getElementById('tipo_audio'); if (defaultEl) defaultEl.checked = true;
-                }
-                // ensure labels reflect current state
-                refreshOptionCardSelection();
-                updateUserConfig();
-            });
-        })();
-    </script>
-    <script>
-        // Paste button handler: reads clipboard and pastes into inputURL
-        (function () {
-            async function pasteFromClipboard() {
-                const input = document.getElementById('inputURL');
-                if (!navigator.clipboard) {
-                    // Fallback: focus input and let user paste manually
-                    input.focus();
-                    return;
-                }
-                try {
-                    const text = await navigator.clipboard.readText();
-                    if (text) {
-                        input.value = text;
-                        // trigger input events in case other scripts listen
-                        input.dispatchEvent(new Event('input', { bubbles: true }));
-                    }
-                } catch (e) {
-                    // ignore errors and focus input
-                    input.focus();
-                }
-            }
-
-            document.addEventListener('DOMContentLoaded', function () {
-                const pasteBtn = document.getElementById('pasteBtn');
-                if (pasteBtn) pasteBtn.addEventListener('click', pasteFromClipboard);
-            });
-        })();
-    </script>
-    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
-    <!-- Settings Modal -->
-    <div class="modal fade" id="configModal" tabindex="-1" aria-labelledby="configModalLabel" aria-hidden="true">
-        <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
-            <div class="modal-content bg-dark border-secondary">
-                <div class="modal-header border-secondary" style="background: rgba(0, 0, 0, 0.3);">
-                    <h5 class="modal-title" id="configModalLabel">
-                        <i class="fa-solid fa-gear text-primary me-2"></i>
-                        Download Settings
-                    </h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body">
-                    <form id="configForm">
-                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" required />
-
-                        <div class="row g-4">
-                            <!-- Left Column -->
-                            <div class="col-lg-6">
-                                <!-- Audio/Video Quality -->
-                                <div class="config-section">
-                                    <div class="config-section-title">
-                                        <i class="fa-solid fa-sliders text-info"></i>
-                                        <span>Audio/Video Quality</span>
-                                    </div>
-                                    <p class="config-section-description">
-                                        Select download quality.
-                                    </p>
-                                    <div class="option-stack">
-                                        <label class="option-card w-100" data-config="Calidad_audio_video" data-value="min">
-                                            <div class="form-check mb-0">
-                                                <input class="form-check-input" type="radio" name="Calidad_audio_video"
-                                                       id="qualityMin" value="min">
-                                                <span class="form-check-label">
-                                                    <i class="fa-solid fa-gauge-low text-success me-1"></i>
-                                                    <strong>Minimum</strong>
-                                                    <small class="text-muted ms-2">64 kbps</small>
-                                                    </span>
-                                                    </div>
-                                                    </label>
-                                        <label class="option-card w-100" data-config="Calidad_audio_video" data-value="avg">
-                                            <div class="form-check mb-0">
-                                                <input class="form-check-input" type="radio" name="Calidad_audio_video"
-                                                       id="qualityAvg" value="avg">
-                                                <span class="form-check-label">
-                                                    <i class="fa-solid fa-gauge text-warning me-1"></i>
-                                                    <strong>Average</strong>
-                                                    <small class="text-muted ms-2">128 kbps</small>
-                                                    </span>
-                                                    </div>
-                                                    </label>
-                                        <label class="option-card w-100" data-config="Calidad_audio_video" data-value="max">
-                                            <div class="form-check mb-0">
-                                                <input class="form-check-input" type="radio" name="Calidad_audio_video"
-                                                       id="qualityMax" value="max">
-                                                <span class="form-check-label">
-                                                    <i class="fa-solid fa-gauge-high text-danger me-1"></i>
-                                                    <strong>Maximum</strong>
-                                                    <small class="text-muted ms-2">320 kbps</small>
-                                                    </span>
-                                                    </div>
-                                                    </label>
-                                                    </div>
-                                                    </div>
-                                <!-- Audio Format -->
-                                <div class="config-section">
-                                    <div class="config-section-title">
-                                        <i class="fa-solid fa-file-audio text-success"></i>
-                                        <span>Audio Format</span>
-                                    </div>
-                                    <div class="row g-2">
-                                        <div class="col-12 col-md-6">
-                                            <label class="option-card w-100" data-config="Formato_audio" data-value="mp3">
-                                                <div class="form-check mb-0">
-                                                    <input class="form-check-input" type="radio" name="Formato_audio"
-                                                           id="formato_mp3" value="mp3">
-                                                    <span class="form-check-label">
-                                                        <strong>MP3</strong>
-                                                    </span>
-                                                </div>
-                                            </label>
-                                        </div>
-                                        <div class="col-12 col-md-6">
-                                            <label class="option-card w-100" data-config="Formato_audio" data-value="m4a">
-                                                <div class="form-check mb-0">
-                                                    <input class="form-check-input" type="radio" name="Formato_audio"
-                                                           id="formato_m4a" value="m4a">
-                                                    <span class="form-check-label">
-                                                        <strong>M4A</strong>
-                                                    </span>
-                                                </div>
-                                            </label>
-                                        </div>
-                                        <div class="col-12 col-md-6">
-                                            <label class="option-card w-100" data-config="Formato_audio" data-value="flac">
-                                                <div class="form-check mb-0">
-                                                    <input class="form-check-input" type="radio" name="Formato_audio"
-                                                           id="formato_flac" value="flac">
-                                                    <span class="form-check-label">
-                                                        <strong>FLAC</strong>
-                                                    </span>
-                                                </div>
-                                            </label>
-                                        </div>
-                                        <div class="col-12 col-md-6">
-                                            <label class="option-card w-100" data-config="Formato_audio" data-value="wav">
-                                                <div class="form-check mb-0">
-                                                    <input class="form-check-input" type="radio" name="Formato_audio"
-                                                           id="formato_wav" value="wav">
-                                                    <span class="form-check-label">
-                                                        <strong>WAV</strong>
-                                                    </span>
-                                                </div>
-                                            </label>
-                                        </div>
-                                        </div>
+                    <div class="row g-4">
+                        <!-- Left Column -->
+                        <div class="col-lg-6">
+                            <!-- Audio/Video Quality -->
+                            <div class="config-section">
+                                <div class="config-section-title">
+                                    <i class="fa-solid fa-sliders text-info"></i>
+                                    <span data-i18n="modal.qualityTitle">Audio/Video Quality</span>
                                 </div>
-
-                                <!-- Video Format -->
-                                <div class="config-section">
-                                    <div class="config-section-title">
-                                        <i class="fa-solid fa-file-video text-danger"></i>
-                                        <span>Video Format</span>
-                                    </div>
-                                    <div class="row g-2">
-                                        <div class="col-12 col-md-6">
-                                            <label class="option-card w-100" data-config="Formato_video" data-value="mp4">
-                                                <div class="form-check mb-0">
-                                                    <input class="form-check-input" type="radio" name="Formato_video"
-                                                           id="formato_mp4" value="mp4">
-                                                    <span class="form-check-label">
-                                                        <strong>MP4</strong>
-                                                    </span>
-                                                </div>
-                                            </label>
-                                        </div>
-                                        <div class="col-12 col-md-6">
-                                            <label class="option-card w-100" data-config="Formato_video" data-value="mkv">
-                                                <div class="form-check mb-0">
-                                                    <input class="form-check-input" type="radio" name="Formato_video"
-                                                           id="formato_mkv" value="mkv">
-                                                    <span class="form-check-label">
-                                                        <strong>MKV</strong>
-                                                    </span>
-                                                </div>
-                                            </label>
-                                        </div>
-                                        <div class="col-12 col-md-6">
-                                            <label class="option-card w-100" data-config="Formato_video" data-value="webm">
-                                                <div class="form-check mb-0">
-                                                    <input class="form-check-input" type="radio" name="Formato_video"
-                                                           id="formato_webm" value="webm">
-                                                    <span class="form-check-label">
-                                                        <strong>WEBM</strong>
-                                                    </span>
-                                                </div>
-                                            </label>
-                                        </div>
-                                        <div class="col-12 col-md-6">
-                                            <label class="option-card w-100" data-config="Formato_video" data-value="mov">
-                                                <div class="form-check mb-0">
-                                                    <input class="form-check-input" type="radio" name="Formato_video"
-                                                           id="formato_mov" value="mov">
-                                                    <span class="form-check-label">
-                                                        <strong>MOV</strong>
-                                                    </span>
-                                                </div>
-                                            </label>
-                                        </div>
-                                        </div>
-                                </div>
-                                </div>
-
-                            <!-- Right Column -->
-                            <div class="col-lg-6">
-                                <!-- Download Options -->
-                                <div class="config-section">
-                                    <div class="config-section-title">
-                                        <i class="fa-solid fa-toggle-on text-warning"></i>
-                                        <span>Download Options</span>
-                                    </div>
-                                    <div class="row g-2">
-                                        <div class="col-12 col-md-6">
-                                            <label class="option-card w-100" data-config="Tipo_descarga" data-value="audio">
-                                                <div class="form-check mb-0">
-                                                    <input class="form-check-input" type="radio" name="Tipo_descarga"
-                                                           id="tipo_audio" value="audio">
-                                                    <span class="form-check-label">
-                                                        <i class="fa-solid fa-music text-primary me-1"></i>
-                                                        <strong>Audio</strong>
-                                                    </span>
-                                                </div>
-                                            </label>
-                                        </div>
-                                        <div class="col-12 col-md-6">
-                                            <label class="option-card w-100" data-config="Tipo_descarga" data-value="video">
-                                                <div class="form-check mb-0">
-                                                    <input class="form-check-input" type="radio" name="Tipo_descarga"
-                                                           id="tipo_video" value="video">
-                                                    <span class="form-check-label">
-                                                        <i class="fa-solid fa-video text-danger me-1"></i>
-                                                        <strong>Video</strong>
-                                                    </span>
-                                                </div>
-                                            </label>
-                                        </div>
-                                        <div class="col-12">
-                                            <label class="option-card w-100" data-config="Scrappear_metadata" data-value="true">
-                                                <div class="form-check mb-0">
-                                                    <input class="form-check-input" type="checkbox" name="Scrappear_metadata"
-                                                           id="scrapeMetadata">
-                                                    <span class="form-check-label">
-                                                        <i class="fa-solid fa-tags text-info me-1"></i>
-                                                        <strong>Add Metadata</strong>
-                                                        <small class="d-block text-muted">Title, artist, cover art</small>
-                                                        </span>
-                                                        </div>
-                                                        </label>
-                                                        </div>
-                                                        </div>
-                                                        </div>
-
-                                <!-- YouTube Music -->
-                                <div class="config-section">
-                                    <div class="config-section-title">
-                                        <i class="fa-brands fa-youtube text-danger"></i>
-                                        <span>YouTube Music</span>
-                                        <span class="feature-badge new">New</span>
-                                    </div>
-                                    <label class="option-card w-100" data-config="Preferir_YouTube_Music" data-value="true">
+                                <p class="config-section-description">
+                                    <span data-i18n="modal.qualityDesc">Select download quality.</span>
+                                </p>
+                                <div class="option-stack">
+                                    <label class="option-card w-100" data-config="audio_video_quality" data-value="min">
                                         <div class="form-check mb-0">
-                                            <input class="form-check-input" type="checkbox" name="Preferir_YouTube_Music"
-                                                   id="preferirYouTubeMusic">
+                                            <input class="form-check-input" type="radio" name="audio_video_quality"
+                                                   id="qualityMin" value="min">
                                             <span class="form-check-label">
-                                                <i class="fa-solid fa-wand-magic-sparkles text-info me-1"></i>
-                                                <strong>Prefer YouTube Music audio</strong>
-                                                <small class="d-block text-muted">
-                                                    Pure audio without extra video content.
-                                                </small>
-                                                </span>
-                                                </div>
-                                                </label>
-                                                </div>
-
-                                <!-- SponsorBlock -->
-                                <div class="config-section">
-                                    <div class="config-section-title">
-                                        <i class="fa-solid fa-scissors text-warning"></i>
-                                        <span>SponsorBlock</span>
-                                        <span class="feature-badge beta">Beta</span>
-                                    </div>
-                                    <label class="option-card w-100 mb-2" data-config="SponsorBlock_enabled" data-value="true">
-                                        <div class="form-check mb-0">
-                                            <input class="form-check-input" type="checkbox" name="SponsorBlock_enabled"
-                                                   id="sponsorblockEnabled"
-                                                   onclick="toggleSponsorBlockCategories()">
-                                            <span class="form-check-label">
-                                                <i class="fa-solid fa-power-off me-1"></i>
-                                                <strong>Enable SponsorBlock</strong>
+                                                <i class="fa-solid fa-gauge-low text-success me-1"></i>
+                                                <strong data-i18n="modal.qualityMin">Minimum</strong>
+                                                <small class="text-muted ms-2">64 kbps</small>
                                             </span>
                                         </div>
                                     </label>
+                                    <label class="option-card w-100" data-config="audio_video_quality" data-value="avg">
+                                        <div class="form-check mb-0">
+                                            <input class="form-check-input" type="radio" name="audio_video_quality"
+                                                   id="qualityAvg" value="avg">
+                                            <span class="form-check-label">
+                                                <i class="fa-solid fa-gauge text-warning me-1"></i>
+                                                <strong data-i18n="modal.qualityAvg">Average</strong>
+                                                <small class="text-muted ms-2">128 kbps</small>
+                                            </span>
+                                        </div>
+                                    </label>
+                                    <label class="option-card w-100" data-config="audio_video_quality" data-value="max">
+                                        <div class="form-check mb-0">
+                                            <input class="form-check-input" type="radio" name="audio_video_quality"
+                                                   id="qualityMax" value="max">
+                                            <span class="form-check-label">
+                                                <i class="fa-solid fa-gauge-high text-danger me-1"></i>
+                                                <strong data-i18n="modal.qualityMax">Maximum</strong>
+                                                <small class="text-muted ms-2">320 kbps</small>
+                                            </span>
+                                        </div>
+                                    </label>
+                                </div>
+                            </div>
+                            <!-- Audio Format -->
+                            <div class="config-section">
+                                <div class="config-section-title">
+                                    <i class="fa-solid fa-file-audio text-success"></i>
+                                    <span data-i18n="modal.audioFormat">Audio Format</span>
+                                </div>
+                                <div class="row g-2">
+                                    <div class="col-12 col-md-6">
+                                        <label class="option-card w-100" data-config="audio_format" data-value="mp3">
+                                            <div class="form-check mb-0">
+                                                <input class="form-check-input" type="radio" name="audio_format"
+                                                       id="formato_mp3" value="mp3">
+                                                <span class="form-check-label">
+                                                    <strong>MP3</strong>
+                                                </span>
+                                            </div>
+                                        </label>
+                                    </div>
+                                    <div class="col-12 col-md-6">
+                                        <label class="option-card w-100" data-config="audio_format" data-value="m4a">
+                                            <div class="form-check mb-0">
+                                                <input class="form-check-input" type="radio" name="audio_format"
+                                                       id="formato_m4a" value="m4a">
+                                                <span class="form-check-label">
+                                                    <strong>M4A</strong>
+                                                </span>
+                                            </div>
+                                        </label>
+                                    </div>
+                                    <div class="col-12 col-md-6">
+                                        <label class="option-card w-100" data-config="audio_format" data-value="flac">
+                                            <div class="form-check mb-0">
+                                                <input class="form-check-input" type="radio" name="audio_format"
+                                                       id="formato_flac" value="flac">
+                                                <span class="form-check-label">
+                                                    <strong>FLAC</strong>
+                                                </span>
+                                            </div>
+                                        </label>
+                                    </div>
+                                    <div class="col-12 col-md-6">
+                                        <label class="option-card w-100" data-config="audio_format" data-value="wav">
+                                            <div class="form-check mb-0">
+                                                <input class="form-check-input" type="radio" name="audio_format"
+                                                       id="formato_wav" value="wav">
+                                                <span class="form-check-label">
+                                                    <strong>WAV</strong>
+                                                </span>
+                                            </div>
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
 
-                                    <div id="sponsorblockCategories" class="mt-2 sponsorblock-disabled">
-                                        <div class="row g-2">
-                                            <div class="col-6">
-                                                <label class="option-card w-100">
-                                                    <div class="form-check mb-0">
-                                                        <input class="form-check-input sponsorblock-category" type="checkbox" name="SponsorBlock_categories"
-                                                               value="sponsor" id="sb_sponsor">
-                                                        <span class="form-check-label">
-                                                            <i class="fa-solid fa-ad text-danger me-1"></i>
-                                                            <strong>Sponsors</strong>
-                                                        </span>
-                                                    </div>
-                                                </label>
+                            <!-- Video Format -->
+                            <div class="config-section">
+                                <div class="config-section-title">
+                                    <i class="fa-solid fa-file-video text-danger"></i>
+                                    <span data-i18n="modal.videoFormat">Video Format</span>
+                                </div>
+                                <div class="row g-2">
+                                    <div class="col-12 col-md-6">
+                                        <label class="option-card w-100" data-config="video_format" data-value="mp4">
+                                            <div class="form-check mb-0">
+                                                <input class="form-check-input" type="radio" name="video_format"
+                                                       id="formato_mp4" value="mp4">
+                                                <span class="form-check-label">
+                                                    <strong>MP4</strong>
+                                                </span>
                                             </div>
-                                            <div class="col-6">
-                                                <label class="option-card w-100">
-                                                    <div class="form-check mb-0">
-                                                        <input class="form-check-input sponsorblock-category" type="checkbox" name="SponsorBlock_categories"
-                                                               value="music_offtopic" id="sb_music_offtopic">
-                                                        <span class="form-check-label">
-                                                            <i class="fa-solid fa-comment-slash text-danger me-1"></i>
-                                                            <strong>Non-music</strong>
-                                                        </span>
-                                                    </div>
-                                                </label>
+                                        </label>
+                                    </div>
+                                    <div class="col-12 col-md-6">
+                                        <label class="option-card w-100" data-config="video_format" data-value="mkv">
+                                            <div class="form-check mb-0">
+                                                <input class="form-check-input" type="radio" name="video_format"
+                                                       id="formato_mkv" value="mkv">
+                                                <span class="form-check-label">
+                                                    <strong>MKV</strong>
+                                                </span>
                                             </div>
-                                            <div class="col-6">
-                                                <label class="option-card w-100">
-                                                    <div class="form-check mb-0">
-                                                        <input class="form-check-input sponsorblock-category" type="checkbox" name="SponsorBlock_categories"
-                                                               value="intro" id="sb_intro">
-                                                        <span class="form-check-label">
-                                                            <i class="fa-solid fa-play text-info me-1"></i>
-                                                            <strong>Intros</strong>
-                                                        </span>
-                                                    </div>
-                                                </label>
+                                        </label>
+                                    </div>
+                                    <div class="col-12 col-md-6">
+                                        <label class="option-card w-100" data-config="video_format" data-value="webm">
+                                            <div class="form-check mb-0">
+                                                <input class="form-check-input" type="radio" name="video_format"
+                                                       id="formato_webm" value="webm">
+                                                <span class="form-check-label">
+                                                    <strong>WEBM</strong>
+                                                </span>
                                             </div>
-                                            <div class="col-6">
-                                                <label class="option-card w-100">
-                                                    <div class="form-check mb-0">
-                                                        <input class="form-check-input sponsorblock-category" type="checkbox" name="SponsorBlock_categories"
-                                                               value="outro" id="sb_outro">
-                                                        <span class="form-check-label">
-                                                            <i class="fa-solid fa-stop text-secondary me-1"></i>
-                                                            <strong>Outros</strong>
-                                                        </span>
-                                                    </div>
-                                                </label>
+                                        </label>
+                                    </div>
+                                    <div class="col-12 col-md-6">
+                                        <label class="option-card w-100" data-config="video_format" data-value="mov">
+                                            <div class="form-check mb-0">
+                                                <input class="form-check-input" type="radio" name="video_format"
+                                                       id="formato_mov" value="mov">
+                                                <span class="form-check-label">
+                                                    <strong>MOV</strong>
+                                                </span>
                                             </div>
-                                            <div class="col-6">
-                                                <label class="option-card w-100">
-                                                    <div class="form-check mb-0">
-                                                        <input class="form-check-input sponsorblock-category" type="checkbox" name="SponsorBlock_categories"
-                                                               value="selfpromo" id="sb_selfpromo">
-                                                        <span class="form-check-label">
-                                                            <i class="fa-solid fa-bullhorn text-warning me-1"></i>
-                                                            <strong>Auto-promo</strong>
-                                                        </span>
-                                                    </div>
-                                                </label>
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Right Column -->
+                        <div class="col-lg-6">
+                            <!-- Download Options -->
+                            <div class="config-section">
+                                <div class="config-section-title">
+                                    <i class="fa-solid fa-toggle-on text-warning"></i>
+                                    <span data-i18n="modal.downloadOptions">Download Options</span>
+                                </div>
+                                <div class="row g-2">
+                                    <div class="col-12 col-md-6">
+                                        <label class="option-card w-100" data-config="download_type" data-value="audio">
+                                            <div class="form-check mb-0">
+                                                <input class="form-check-input" type="radio" name="download_type"
+                                                       id="tipo_audio" value="audio">
+                                                <span class="form-check-label">
+                                                    <i class="fa-solid fa-music text-primary me-1"></i>
+                                                    <strong data-i18n="common.audio">Audio</strong>
+                                                </span>
                                             </div>
-                                            <div class="col-6">
-                                                <label class="option-card w-100">
-                                                    <div class="form-check mb-0">
-                                                        <input class="form-check-input sponsorblock-category" type="checkbox" name="SponsorBlock_categories"
-                                                               value="interaction" id="sb_interaction">
-                                                        <span class="form-check-label">
-                                                            <i class="fa-solid fa-thumbs-up text-success me-1"></i>
-                                                            <strong>Interaction</strong>
-                                                        </span>
-                                                    </div>
-                                                </label>
+                                        </label>
+                                    </div>
+                                    <div class="col-12 col-md-6">
+                                        <label class="option-card w-100" data-config="download_type" data-value="video">
+                                            <div class="form-check mb-0">
+                                                <input class="form-check-input" type="radio" name="download_type"
+                                                       id="tipo_video" value="video">
+                                                <span class="form-check-label">
+                                                    <i class="fa-solid fa-video text-danger me-1"></i>
+                                                    <strong data-i18n="common.video">Video</strong>
+                                                </span>
                                             </div>
+                                        </label>
+                                    </div>
+                                    <div class="col-12">
+                                        <label class="option-card w-100" data-config="scrape_metadata" data-value="true">
+                                            <div class="form-check mb-0">
+                                                <input class="form-check-input" type="checkbox" name="scrape_metadata"
+                                                       id="scrapeMetadata">
+                                                <span class="form-check-label">
+                                                    <i class="fa-solid fa-tags text-info me-1"></i>
+                                                    <strong data-i18n="modal.addMetadata">Add Metadata</strong>
+                                                    <small class="d-block text-muted" data-i18n="modal.addMetadataDesc">Title, artist, cover art</small>
+                                                </span>
+                                            </div>
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- YouTube Music -->
+                            <div class="config-section">
+                                <div class="config-section-title">
+                                    <i class="fa-brands fa-youtube text-danger"></i>
+                                    <span data-i18n="modal.ytmTitle">YouTube Music</span>
+                                    <span class="feature-badge new" data-i18n="badge.new">New</span>
+                                </div>
+                                <label class="option-card w-100" data-config="prefer_youtube_music" data-value="true">
+                                    <div class="form-check mb-0">
+                                        <input class="form-check-input" type="checkbox" name="prefer_youtube_music"
+                                               id="preferirYouTubeMusic">
+                                        <span class="form-check-label">
+                                            <i class="fa-solid fa-wand-magic-sparkles text-info me-1"></i>
+                                            <strong data-i18n="modal.ytmPrefer">Prefer YouTube Music audio</strong>
+                                            <small class="d-block text-muted">
+                                                <span data-i18n="modal.ytmPreferDesc">Pure audio without extra video content.</span>
+                                            </small>
+                                        </span>
+                                    </div>
+                                </label>
+                            </div>
+
+                            <!-- SponsorBlock -->
+                            <div class="config-section">
+                                <div class="config-section-title">
+                                    <i class="fa-solid fa-scissors text-warning"></i>
+                                    <span>SponsorBlock</span>
+                                    <span class="feature-badge beta" data-i18n="badge.beta">Beta</span>
+                                </div>
+                                <label class="option-card w-100 mb-2" data-config="sponsorblock_enabled" data-value="true">
+                                    <div class="form-check mb-0">
+                                        <input class="form-check-input" type="checkbox" name="sponsorblock_enabled"
+                                               id="sponsorblockEnabled"
+                                               onclick="toggleSponsorBlockCategories()">
+                                        <span class="form-check-label">
+                                            <i class="fa-solid fa-power-off me-1"></i>
+                                            <strong data-i18n="modal.sbEnable">Enable SponsorBlock</strong>
+                                        </span>
+                                    </div>
+                                </label>
+
+                                <div id="sponsorblockCategories" class="mt-2 sponsorblock-disabled">
+                                    <div class="row g-2">
+                                        <div class="col-6">
+                                            <label class="option-card w-100">
+                                                <div class="form-check mb-0">
+                                                    <input class="form-check-input sponsorblock-category" type="checkbox" name="sponsorblock_categories"
+                                                           value="sponsor" id="sb_sponsor">
+                                                    <span class="form-check-label">
+                                                        <i class="fa-solid fa-ad text-danger me-1"></i>
+                                                        <strong data-i18n="modal.sbSponsors">Sponsors</strong>
+                                                    </span>
+                                                </div>
+                                            </label>
+                                        </div>
+                                        <div class="col-6">
+                                            <label class="option-card w-100">
+                                                <div class="form-check mb-0">
+                                                    <input class="form-check-input sponsorblock-category" type="checkbox" name="sponsorblock_categories"
+                                                           value="music_offtopic" id="sb_music_offtopic">
+                                                    <span class="form-check-label">
+                                                        <i class="fa-solid fa-comment-slash text-danger me-1"></i>
+                                                        <strong data-i18n="modal.sbNonMusic">Non-music</strong>
+                                                    </span>
+                                                </div>
+                                            </label>
+                                        </div>
+                                        <div class="col-6">
+                                            <label class="option-card w-100">
+                                                <div class="form-check mb-0">
+                                                    <input class="form-check-input sponsorblock-category" type="checkbox" name="sponsorblock_categories"
+                                                           value="intro" id="sb_intro">
+                                                    <span class="form-check-label">
+                                                        <i class="fa-solid fa-play text-info me-1"></i>
+                                                        <strong data-i18n="modal.sbIntros">Intros</strong>
+                                                    </span>
+                                                </div>
+                                            </label>
+                                        </div>
+                                        <div class="col-6">
+                                            <label class="option-card w-100">
+                                                <div class="form-check mb-0">
+                                                    <input class="form-check-input sponsorblock-category" type="checkbox" name="sponsorblock_categories"
+                                                           value="outro" id="sb_outro">
+                                                    <span class="form-check-label">
+                                                        <i class="fa-solid fa-stop text-secondary me-1"></i>
+                                                        <strong data-i18n="modal.sbOutros">Outros</strong>
+                                                    </span>
+                                                </div>
+                                            </label>
+                                        </div>
+                                        <div class="col-6">
+                                            <label class="option-card w-100">
+                                                <div class="form-check mb-0">
+                                                    <input class="form-check-input sponsorblock-category" type="checkbox" name="sponsorblock_categories"
+                                                           value="selfpromo" id="sb_selfpromo">
+                                                    <span class="form-check-label">
+                                                        <i class="fa-solid fa-bullhorn text-warning me-1"></i>
+                                                        <strong data-i18n="modal.sbSelfPromo">Auto-promo</strong>
+                                                    </span>
+                                                </div>
+                                            </label>
+                                        </div>
+                                        <div class="col-6">
+                                            <label class="option-card w-100">
+                                                <div class="form-check mb-0">
+                                                    <input class="form-check-input sponsorblock-category" type="checkbox" name="sponsorblock_categories"
+                                                           value="interaction" id="sb_interaction">
+                                                    <span class="form-check-label">
+                                                        <i class="fa-solid fa-thumbs-up text-success me-1"></i>
+                                                        <strong data-i18n="modal.sbInteraction">Interaction</strong>
+                                                    </span>
+                                                </div>
+                                            </label>
                                         </div>
                                     </div>
                                 </div>
                             </div>
+                        </div>
+                        <!-- Cookies (optional, full width) -->
+                        <div class="col-12">
+                            <div class="config-section">
+                                <div class="config-section-title">
+                                    <i class="fa-solid fa-cookie-bite text-warning"></i>
+                                    <span data-i18n="modal.cookiesTitle">Cookies (Optional)</span>
+                                </div>
+                                <p class="config-section-description">
+                                    <span data-i18n="modal.cookiesDesc">Add cookies only if needed for private or age-restricted content. Leave blank to skip.</span>
+                                </p>
+
+                                <label class="form-label text-muted" for="cookiesContent">
+                                    <span data-i18n="modal.cookiesLabel">Cookies content (Netscape format)</span>
+                                </label>
+                                <textarea class="form-control bg-dark border-secondary text-light" id="cookiesContent"
+                                          name="cookies_content" rows="4"
+                                          placeholder="# Netscape HTTP Cookie File" data-i18n-placeholder="modal.cookiesPlaceholder"></textarea>
+
                             </div>
-                            </form>
-                            </div>
-                            <div class="modal-footer border-secondary">
-                                <button type="button" id="saveConfigBtn" class="btn btn-primary w-100 py-2">
-                                    <i class="fa-solid fa-save me-2"></i>
-                                    Save Settings
-                                </button>
-                </div>
-                </div>
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer border-secondary">
+                <button type="button" id="saveConfigBtn" class="btn btn-primary w-100 py-2">
+                    <i class="fa-solid fa-save me-2"></i>
+                    <span data-i18n="btn.saveSettings">Save Settings</span>
+                </button>
+            </div>
         </div>
     </div>
+</div>
 </body>
 {% endblock %}

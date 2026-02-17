@@ -1,0 +1,57 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.env
+.venv/
+env/
+venv/
+ENV/
+
+# IDE
+.vscode/
+*.code-workspace
+.idea/
+
+# Testing
+.tox/
+.coverage
+.pytest_cache/
+htmlcov/
+test.py
+.cache
+.cache_ggshield
+
+# Flask
+instance/
+
+# Logs
+logs/
+*.log
+
+# Sensitive data
+config.json
+cookies.txt
+
+# Downloads
+Downloads/
+*.zip
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Redis binaries (platform-specific, not tracked in VCS)
+redis-server*
+redis-cli*
+# Added by ggshield
+.cache_ggshield

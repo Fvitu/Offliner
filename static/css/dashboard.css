@@ -161,6 +161,14 @@
     cursor: not-allowed;
 }
 
+/* Generic disabled option-card (e.g. subtitle format restrictions) */
+.option-card.disabled {
+    opacity: 0.35;
+    pointer-events: none;
+    cursor: not-allowed;
+    user-select: none;
+}
+
 /* Toast container */
 #toastContainer {
     z-index: 9999;
@@ -523,9 +531,18 @@
 }
 
 .skeleton-item {
-    height: 70px;
-    border-radius: 8px;
+    /* Slightly larger skeletons to match the final .media-item footprint
+       including extra spacing for numbering/controls on the left. */
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
+    padding: 1rem;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
     margin-bottom: 0.5rem;
+    /* Larger min-height to better match .media-item (thumbnail + padding + numbering) */
+    min-height: calc(70px + 2.4rem);
 }
 
 /* Glassmorphism Navbar */
@@ -825,6 +842,7 @@
 
 .bulk-actions-menu {
     min-width: 200px;
+    padding-bottom: 8px;
 }
 
 .dropdown-section-header {

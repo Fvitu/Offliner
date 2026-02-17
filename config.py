@@ -1,88 +1,93 @@
 """
-Configuración de la aplicación Flask.
-Sin almacenamiento de datos de usuario - respetando la privacidad.
+Flask application configuration.
+No user data is stored by this service to respect user privacy.
 """
 
 import os
 from dotenv import load_dotenv
 
-# Cargar variables de entorno desde archivo .env
+# Load environment variables from a .env file if present
 load_dotenv()
 
 
 class Config:
-    """Configuración base de la aplicación."""
+    """Base configuration for the application."""
 
-    # Clave secreta para CSRF - DEBE ser configurada en producción
+    # Secret key for CSRF protection - MUST be set in production
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-key-change-in-production")
 
-    # Configuración de Spotify (para metadata)
+    # Spotify API configuration (used for resolving Spotify links)
     SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "")
     SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "")
 
-    # Configuración de sesión
-    SESSION_COOKIE_SECURE = True  # Solo enviar cookies por HTTPS en producción
-    SESSION_COOKIE_HTTPONLY = True  # Prevenir acceso JavaScript a cookies
-    SESSION_COOKIE_SAMESITE = "Lax"  # Prevenir ataques CSRF
+    # Session cookie settings
+    SESSION_COOKIE_SECURE = True  # Only send cookies over HTTPS in production
+    SESSION_COOKIE_HTTPONLY = True  # Prevent JavaScript access to cookies
+    SESSION_COOKIE_SAMESITE = "Lax"  # Helps mitigate CSRF
 
-    # Configuración de Flask
-    MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # Limitar tamaño de uploads a 16MB
+    # Flask upload size limit
+    MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # Limit uploads to 16MB
 
     # ============================================
-    # Límites de Rate Limiting (Peticiones HTTP)
+    # HTTP Rate Limiting (requests)
     # ============================================
     RATE_LIMIT_PER_DAY = int(os.getenv("RATE_LIMIT_PER_DAY", "200"))
     RATE_LIMIT_PER_HOUR = int(os.getenv("RATE_LIMIT_PER_HOUR", "50"))
 
-    # Límites específicos por endpoint
+    # Endpoint-specific rate limits (string form used by limiter)
     RATE_LIMIT_SEARCH = os.getenv("RATE_LIMIT_SEARCH", "10 per minute")
     RATE_LIMIT_PLAYLIST = os.getenv("RATE_LIMIT_PLAYLIST", "30 per minute")
     RATE_LIMIT_MEDIA_INFO = os.getenv("RATE_LIMIT_MEDIA_INFO", "60 per minute")
     RATE_LIMIT_DOWNLOAD = os.getenv("RATE_LIMIT_DOWNLOAD", "10 per minute")
 
     # ============================================
-    # Límites de Descargas por Usuario
+    # Per-user download limits
     # ============================================
-    # Límite de archivos (videos/audios) descargados por usuario
+    # Max number of files (video/audio) a user can download
     MAX_DOWNLOADS_PER_HOUR = int(os.getenv("MAX_DOWNLOADS_PER_HOUR", "10"))
     MAX_DOWNLOADS_PER_DAY = int(os.getenv("MAX_DOWNLOADS_PER_DAY", "50"))
 
-    # Límite de duración total de contenido descargado (en minutos)
-    MAX_DURATION_PER_HOUR = int(os.getenv("MAX_DURATION_PER_HOUR", "120"))  # 2 horas
-    MAX_DURATION_PER_DAY = int(os.getenv("MAX_DURATION_PER_DAY", "600"))  # 10 horas
+    # Max total duration of content downloaded by a user (minutes)
+    MAX_DURATION_PER_HOUR = int(os.getenv("MAX_DURATION_PER_HOUR", "120"))  # 2 hours
+    MAX_DURATION_PER_DAY = int(os.getenv("MAX_DURATION_PER_DAY", "600"))  # 10 hours
 
     # ============================================
-    # Límites de Contenido Individual
+    # Individual content limits
     # ============================================
-    # Duración máxima permitida para un video o audio individual (en minutos)
-    MAX_CONTENT_DURATION = int(os.getenv("MAX_CONTENT_DURATION", "60"))  # 1 hora
+    # Maximum allowed duration for a single media item (minutes)
+    MAX_CONTENT_DURATION = int(os.getenv("MAX_CONTENT_DURATION", "60"))  # 1 hour
 
-    # Límite máximo de items en una playlist
+    # Maximum number of items allowed in a playlist
     MAX_PLAYLIST_ITEMS = int(os.getenv("MAX_PLAYLIST_ITEMS", "100"))
+
+    # ============================================
+    # Redis configuration (used by RQ task queue & progress store)
+    # ============================================
+    REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 
 class DevelopmentConfig(Config):
-    """Configuración para desarrollo."""
+    """Development configuration."""
 
     DEBUG = True
-    SESSION_COOKIE_SECURE = False  # Permitir HTTP en desarrollo
+    SESSION_COOKIE_SECURE = False  # Allow HTTP during local development
 
 
 class ProductionConfig(Config):
-    """Configuración para producción."""
+    """Production configuration."""
 
     DEBUG = False
-    # En producción, asegurarse de que SECRET_KEY esté configurada
+    # In production ensure SECRET_KEY is properly configured
 
 
 class TestingConfig(Config):
-    """Configuración para testing."""
+    """Testing configuration."""
 
     TESTING = True
     DEBUG = True
 
 
-# Diccionario de configuraciones disponibles
+# Available configuration mappings
 config = {
     "development": DevelopmentConfig,
     "production": ProductionConfig,
@@ -92,6 +97,6 @@ config = {
 
 
 def get_config():
-    """Obtiene la configuración según el entorno."""
+    """Return the configuration class based on the FLASK_ENV environment variable."""
     env = os.getenv("FLASK_ENV", "development")
     return config.get(env, config["default"])

@@ -157,3 +157,30 @@ body {
 .list-group-item {
     border: var(--bs-list-group-border-width) solid var(--bs-list-group-action-active-bg);
 }
+
+/* Flags */
+
+.lang-flag {
+    height: 1.1em;
+    /* size relative to font for consistent vertical alignment */
+    width: auto;
+    display: inline-block;
+    vertical-align: middle;
+    /* align with surrounding text */
+    margin-right: .5rem;
+    object-fit: contain;
+}
+
+.lang-name {
+    display: inline;
+}
+
+@media (max-width: 575.98px) {
+    .lang-flag {
+        display: inline-block;
+    }
+
+    .lang-name {
+        display: none;
+    }
+}

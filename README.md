@@ -1,165 +1,223 @@
-# 🎵 Music Downloader - Aplicación Web
+# 🎵 Offliner — Privacy-First Media Archiver
 
-Una aplicación web moderna para descargar audio y video de YouTube y Spotify con una interfaz amigable y múltiples opciones de configuración.
+Offliner is a robust media archiver built with Python and Flask for people who want reliable offline access to music and videos. It supports YouTube and Spotify links, downloads media through `yt-dlp`, processes files with `FFmpeg`, and applies metadata/cover embedding through the yt-dlp post-processing pipeline (which may use Mutagen internally depending on format).
+
+If you are tired of buffering or losing access to your favorite tracks, Offliner is designed to help preserve authorized media locally for personal offline playback.
 
 ![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
 ![Flask](https://img.shields.io/badge/Flask-3.0-green.svg)
 ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Privacy](https://img.shields.io/badge/Privacy-First-green.svg)
 
-## 🔒 Privacidad
+## 🚀 What this project does
 
-**Esta aplicación está diseñada con la privacidad del usuario como prioridad:**
+- Downloads audio/video from YouTube with selectable quality and output format.
+- Resolves Spotify tracks/playlists and maps them to downloadable sources.
+- Supports playlists (YouTube, YouTube Music, Spotify) and item selection.
+- Uses SponsorBlock integration to skip non-music segments (optional).
+- Embeds metadata and cover art through yt-dlp + FFmpeg postprocessors.
+- Provides live progress updates through Redis + RQ background jobs.
+- Includes a dark, modern web UI with per-user settings saved locally.
 
-- ❌ **Sin base de datos** - No almacenamos ninguna información tuya
-- ❌ **Sin registro de usuarios** - No necesitas crear cuenta
-- ❌ **Sin cookies de rastreo** - Solo cookies técnicas necesarias (CSRF)
-- ✅ **Configuración local** - Tu configuración se guarda en tu navegador (localStorage)
-- ✅ **Sin logs de usuario** - No registramos qué descargas
+## 🗂️ Preservation-first approach
 
-## ✨ Características
+Offliner is built with an archival mindset: the goal is to help users preserve media locally for uninterrupted offline listening/viewing.
 
-- 🎬 **Descarga videos** de YouTube en múltiples calidades y formatos
-- 🎵 **Descarga audio** de YouTube con conversión automática a MP3, WAV, M4A o FLAC
-- 🎧 **Integración con Spotify** - Busca automáticamente canciones de Spotify en YouTube
-- 📋 **Soporte para playlists** de YouTube y Spotify
-- 🏷️ **Metadata automática** - Añade portadas, artistas, álbum y año de lanzamiento
-- ⚙️ **Configuración personalizada** guardada en tu navegador
-- 🎯 **SponsorBlock** - Elimina automáticamente sponsors, intros y outros
-- 🎵 **YouTube Music** - Preferencia de audio puro de YouTube Music
-- 🔒 **Seguridad** - Protección CSRF, rate limiting
+**Important:** before using this tool, users must obtain permission for both:
 
-## 🚀 Instalación
+1. Access/use of the content.
+2. Download/storage of the content.
 
-### Requisitos previos
+Using content without proper authorization may violate copyright law and platform Terms of Service.
 
-- Python 3.8 o superior
-- FFmpeg (para conversión de audio)
+## ⚖️ Copyright and responsibility
 
-### Pasos de instalación
+**Disclaimer:** We are not responsible for the content downloaded using this tool. Users must verify that the content is free of copyright restrictions and authorized for download prior to initiating any transfer. Copyrighted content is not available for download with this tool.
 
-1. **Clonar el repositorio**
+By choosing to download, you acknowledge that the accessed content is for personal, non-commercial use only. You agree not to distribute, copy, modify, or otherwise use the downloaded content for commercial purposes, including but not limited to resale, public performance, or broadcasting. Any use beyond this scope may violate applicable copyright laws and Terms of Service. We assume no liability for unauthorized or improper use; the user assumes full responsibility for compliance with all relevant laws and contractual obligations.
+
+## 🔒 Privacy
+
+Offliner is privacy-first by design:
+
+- No user accounts.
+- No database for user profiles/history.
+- No analytics/tracking cookies.
+- UI settings are stored in your own browser (`localStorage`).
+- Downloads are processed in temporary local folders and packaged locally.
+
+The server includes technical protections (CSRF, rate limiting, temporary in-memory limits) to prevent abuse, not to build user profiles.
+
+## 🧱 Tech stack
+
+- **Backend:** Flask, Python
+- **Download engine:** yt-dlp
+- **Media processing:** FFmpeg
+- **Queue & progress:** Redis + RQ
+- **Integrations:** Spotipy, YTMusic API, SponsorBlock API
+- **Frontend:** Bootstrap 5 + vanilla JavaScript
+
+## ✅ Prerequisites
+
+Before running Offliner, ensure:
+
+- Python `3.8+`
+- `FFmpeg` installed and available in your system `PATH`
+- Redis available (details below)
+
+## ⚙️ Installation and run guide (with Redis)
+
+### 1) Clone and enter the project
 
 ```bash
-git clone https://github.com/tu-usuario/music-downloader.git
-cd music-downloader
+git clone https://github.com/Fvitu/Offliner
+cd Offliner
 ```
 
-2. **Crear entorno virtual**
+### 2) Create and activate a virtual environment
 
 ```bash
 python -m venv .venv
-# Windows
-.venv\Scripts\activate
-# Linux/Mac
+```
+
+**Windows (PowerShell):**
+
+```powershell
+.venv\Scripts\Activate.ps1
+```
+
+**Linux/macOS:**
+
+```bash
 source .venv/bin/activate
 ```
 
-3. **Instalar dependencias**
+### 3) Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-4. **Configurar variables de entorno** (opcional)
+### 4) Create your `.env` file (optional but recommended)
 
-```bash
-# Copiar archivo de ejemplo
-cp .env.example .env
-# Editar con tus credenciales
-```
+Create a `.env` in the project root. Use the example in the next section.
 
-5. **Ejecutar la aplicación**
+### 5) Run the app
 
 ```bash
 python app.py
 ```
 
-La aplicación estará disponible en `http://localhost:5000`
-
-## ⚙️ Configuración
-
-### Variables de entorno (.env) - Opcional
-
-```env
-# Flask
-SECRET_KEY=tu-clave-secreta-muy-segura
-FLASK_ENV=development
-
-# Spotify (opcional, para metadata)
-SPOTIFY_CLIENT_ID=tu_client_id
-SPOTIFY_CLIENT_SECRET=tu_client_secret
-```
-
-### Opciones de configuración del usuario
-
-La configuración se guarda automáticamente en el localStorage de tu navegador:
-
-| Opción              | Descripción                   | Valores             |
-| ------------------- | ----------------------------- | ------------------- |
-| Calidad Audio/Video | Calidad de descarga           | min, avg, max       |
-| Formato Audio       | Formato de salida de audio    | mp3, m4a, flac, wav |
-| Formato Video       | Formato de salida de video    | mp4, mov, avi, flv  |
-| Descargar Audio     | Extraer solo audio            | true/false          |
-| Descargar Video     | Descargar video completo      | true/false          |
-| Metadata            | Añadir información automática | true/false          |
-| YouTube Music       | Preferir versión de YT Music  | true/false          |
-| SponsorBlock        | Eliminar sponsors/intros      | true/false          |
-
-## 🎯 Uso
-
-1. Abre la aplicación en tu navegador
-2. (Opcional) Configura tus preferencias de descarga
-3. Pega una URL de YouTube/Spotify o escribe el nombre de la canción
-4. Si es una playlist, selecciona los elementos a descargar
-5. ¡Descarga y disfruta!
-
-## 🛠️ Tecnologías
-
-- **Backend:** Flask, Python 3.8+
-- **Frontend:** Bootstrap 5, JavaScript
-- **Descarga:** yt-dlp, youtube-search-python
-- **Metadata:** Mutagen, Spotipy
-- **Almacenamiento:** localStorage (solo en navegador del usuario)
-
-## 📁 Estructura del proyecto
-
-```
-music-downloader/
-├── app.py              # Aplicación Flask principal
-├── main.py             # Lógica de descarga de música
-├── config.py           # Configuración de la aplicación
-├── requirements.txt    # Dependencias Python
-├── models/
-│   └── ModelFile.py    # Modelo de configuración
-├── static/
-│   ├── css/
-│   └── img/
-├── templates/
-│   ├── dashboard.html  # Página principal
-│   ├── layout.html     # Template base
-│   └── error.html      # Página de error
-└── logs/               # Logs de la aplicación
-```
-
-## 🤝 Contribuir
-
-Las contribuciones son bienvenidas. Por favor:
-
-1. Fork el repositorio
-2. Crea una rama para tu feature (`git checkout -b feature/nueva-caracteristica`)
-3. Commit tus cambios (`git commit -am 'Añade nueva característica'`)
-4. Push a la rama (`git push origin feature/nueva-caracteristica`)
-5. Abre un Pull Request
-
-## 📄 Licencia
-
-Este proyecto está bajo la Licencia MIT. Ver el archivo `LICENSE` para más detalles.
-
-## ⚠️ Aviso Legal
-
-Esta herramienta es para uso personal y educativo. Asegúrate de respetar los derechos de autor y los términos de servicio de las plataformas.
+The app starts at: `http://localhost:5000`
 
 ---
 
-Creado con ❤️ por Fede Vitu
+### Redis notes (important)
+
+Offliner uses Redis + RQ for background downloads and real-time progress updates.
+
+When starting `python app.py`, Offliner attempts to:
+
+1. Connect to Redis (`REDIS_URL`, default `redis://localhost:6379/0`).
+2. Auto-start a local `redis-server` binary if available.
+3. Start the RQ worker process automatically.
+
+If Redis cannot be found/launched, downloads will fail even if the web UI loads.
+
+#### Common Windows fix
+
+- Place `redis-server.exe` in the project root **or** install Redis and add it to `PATH`.
+- Then re-run:
+
+```bash
+python app.py
+```
+
+#### Manual fallback (any OS)
+
+If needed, start Redis yourself and then run Offliner:
+
+```bash
+redis-server --port 6379
+python app.py
+```
+
+#### Verify Redis URL
+
+Make sure `.env` matches your Redis instance:
+
+```env
+REDIS_URL=redis://localhost:6379/0
+```
+
+## 🧪 Example `.env`
+
+```env
+# Flask app mode: development | production | testing
+FLASK_ENV=development
+
+# Flask secret for CSRF/session signing (change in production)
+SECRET_KEY=change-this-to-a-long-random-string
+
+# App port (defaults to 5000 if omitted)
+PORT=5000
+
+# Redis connection used by queue + progress store
+REDIS_URL=redis://localhost:6379/0
+
+# Optional Spotify API credentials (needed for reliable Spotify resolution)
+SPOTIFY_CLIENT_ID=
+SPOTIFY_CLIENT_SECRET=
+
+# Global request limits (anti-abuse)
+RATE_LIMIT_PER_DAY=200
+RATE_LIMIT_PER_HOUR=50
+
+# Endpoint-level rate limits
+RATE_LIMIT_SEARCH=10 per minute
+RATE_LIMIT_PLAYLIST=30 per minute
+RATE_LIMIT_MEDIA_INFO=60 per minute
+RATE_LIMIT_DOWNLOAD=10 per minute
+
+# Per-user download caps
+MAX_DOWNLOADS_PER_HOUR=10
+MAX_DOWNLOADS_PER_DAY=50
+
+# Allowed total media duration (minutes)
+MAX_DURATION_PER_HOUR=120
+MAX_DURATION_PER_DAY=600
+
+# Max duration for one media item (minutes)
+MAX_CONTENT_DURATION=60
+
+# Max items allowed per playlist request
+MAX_PLAYLIST_ITEMS=100
+```
+
+## 🖥️ Usage
+
+1. Open the dashboard in your browser.
+2. (Optional) adjust your download settings.
+3. Paste a YouTube/Spotify URL or type a song query.
+4. Select tracks if it is a playlist.
+5. Start the download and wait for the ZIP package.
+
+## 🤝 Contributing
+
+Contributions are welcome and appreciated.
+
+1. Fork the repository.
+2. Create a feature branch: `git checkout -b feature/your-feature`
+3. Commit your changes: `git commit -m "Add your feature"`
+4. Push your branch: `git push origin feature/your-feature`
+5. Open a Pull Request.
+
+If you want to contribute bug fixes, UX improvements, or documentation updates, feel free to open an issue first to discuss the proposal.
+
+## 📄 License
+
+This project is licensed under the MIT License.
+
+---
+
+Made with ❤️ by Fede Vitu

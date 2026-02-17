@@ -9,10 +9,19 @@ requests>=2.32.3
 
 # Music & Video
 spotipy>=2.23.0
-mutagen>=1.47.0
 youtube-search-python>=1.6.6
 yt_dlp>=2024.0.0
 ytmusicapi>=1.0.0
 
+# Fuzzy matching (optional but recommended for performance)
+rapidfuzz>=3.0.0
+
+# Task Queue & State
+redis>=5.0.0
+rq>=1.16.0
+
 # Utilities
 python-dotenv>=1.0.0
+
+# For production deployment (optional, but recommended)
+gunicorn

@@ -1,8 +1,143 @@
 // ============================================
-// Configuración por defecto del servidor
+// Default server configuration
 // ============================================
 const DEFAULT_CONFIG = window.APP_DATA.config;
 const STORAGE_KEY = "music_downloader_config";
+
+// Track download state to warn user on page unload (reload/close)
+let isDownloading = false;
+
+function markDownloadStart() {
+	isDownloading = true;
+}
+
+function markDownloadFinish() {
+	isDownloading = false;
+}
+
+// Expose simple API so other scripts can mark downloads
+window.OfflinerDownload = {
+	start: markDownloadStart,
+	finish: markDownloadFinish,
+	_isDownloading: () => isDownloading,
+};
+
+// Warn the user if they try to leave while a download is in progress
+window.addEventListener("beforeunload", function (e) {
+	if (!isDownloading) return;
+	// Most browsers ignore the returned string, but setting returnValue is required
+	const confirmationMessage = "Puede perder su progreso de descarga si abandona o recarga la página.";
+	e.preventDefault();
+	e.returnValue = confirmationMessage;
+	return confirmationMessage;
+});
+
+// ============================================
+// i18n (Client-side EN/ES, no reload)
+// ============================================
+const LANG_STORAGE_KEY = "offliner_lang";
+const DEFAULT_LANG = "en";
+const translations = window.OFFLINER_TRANSLATIONS || {};
+
+let currentLang = DEFAULT_LANG;
+
+function normalizeLang(lang) {
+	const l = String(lang || "").toLowerCase();
+	if (l.startsWith("es")) return "es";
+	return "en";
+}
+
+function detectBrowserLanguage() {
+	return normalizeLang(navigator.language || navigator.userLanguage || DEFAULT_LANG);
+}
+
+function t(key, params = undefined) {
+	const dict = translations[currentLang] || translations[DEFAULT_LANG] || {};
+	const baseDict = translations[DEFAULT_LANG] || {};
+	let value = dict[key] ?? baseDict[key] ?? key;
+	if (params && typeof value === "string") {
+		Object.entries(params).forEach(([k, v]) => {
+			value = value.replaceAll(`{${k}}`, String(v));
+		});
+	}
+	return value;
+}
+
+function applyTranslationsToDOM(root = document) {
+	root.querySelectorAll("[data-i18n]").forEach((el) => {
+		el.textContent = t(el.dataset.i18n);
+	});
+	root.querySelectorAll("[data-i18n-html]").forEach((el) => {
+		el.innerHTML = t(el.dataset.i18nHtml);
+	});
+	root.querySelectorAll("[data-i18n-placeholder]").forEach((el) => {
+		el.setAttribute("placeholder", t(el.dataset.i18nPlaceholder));
+	});
+	root.querySelectorAll("[data-i18n-title]").forEach((el) => {
+		el.setAttribute("title", t(el.dataset.i18nTitle));
+	});
+}
+
+function refreshDynamicTranslations() {
+	// Update any dynamically generated controls that were rendered before switching language
+	const audioText = t("common.audio");
+	const videoText = t("common.video");
+	// Format buttons (playlist + media preview)
+	document.querySelectorAll(".format-btn-audio").forEach((btn) => {
+		btn.innerHTML = `<i class="fa-solid fa-music"></i> ${audioText}`;
+	});
+	document.querySelectorAll(".format-btn-video").forEach((btn) => {
+		btn.innerHTML = `<i class="fa-solid fa-video"></i> ${videoText}`;
+	});
+}
+
+function updateLanguage(lang, { persist = true } = {}) {
+	currentLang = normalizeLang(lang);
+	if (persist) localStorage.setItem(LANG_STORAGE_KEY, currentLang);
+
+	document.documentElement.setAttribute("lang", currentLang);
+	applyTranslationsToDOM(document);
+
+	// Update navbar flag
+	const flagEl = document.getElementById("currentLangFlag");
+	if (flagEl) {
+		const src = currentLang === "es" ? '/static/img/flags/es.svg' : '/static/img/flags/us.svg';
+		const alt = currentLang === "es" ? 'ES' : 'EN';
+		flagEl.innerHTML = `<img src="${src}" alt="${alt}" class="lang-flag" />`;
+	}
+
+	// Update navbar language name (visible on larger screens)
+	const langNameEl = document.getElementById("currentLangName");
+	if (langNameEl) {
+		langNameEl.textContent = currentLang === "es" ? t("lang.spanish") : t("lang.english");
+	}
+
+	// Highlight selected language in dropdown
+	document.querySelectorAll("[data-lang]").forEach((btn) => {
+		btn.classList.toggle("active", btn.dataset.lang === currentLang);
+	});
+
+	// Re-render dynamic UI text that is created in JS
+	if (typeof updateDownloadButton === "function") updateDownloadButton();
+	if (currentMediaInfo) {
+		const controlsContainer = document.getElementById("mediaPreviewControls");
+		if (controlsContainer && mediaPreviewFormat) {
+			controlsContainer.innerHTML = createFormatControls("media-preview", mediaPreviewFormat);
+		}
+	}
+	refreshDynamicTranslations();
+}
+
+function initLanguage() {
+	const stored = localStorage.getItem(LANG_STORAGE_KEY);
+	const initial = stored ? normalizeLang(stored) : detectBrowserLanguage();
+	updateLanguage(initial, { persist: !!stored });
+
+	// Navbar language selector
+	document.querySelectorAll("[data-lang]").forEach((btn) => {
+		btn.addEventListener("click", () => updateLanguage(btn.dataset.lang));
+	});
+}
 
 // ============================================
 // Funciones de localStorage para configuración
@@ -12,7 +147,7 @@ function getConfig() {
 		const stored = localStorage.getItem(STORAGE_KEY);
 		if (stored) {
 			const parsed = JSON.parse(stored);
-			// Merge con defaults para asegurar que existan todas las claves
+			// Merge with defaults to ensure all keys exist
 			return { ...DEFAULT_CONFIG, ...parsed };
 		}
 	} catch (e) {
@@ -39,7 +174,7 @@ function getCurrentFormConfig() {
 		config[radio.name] = radio.value;
 	});
 
-	// Checkboxes (excepto SponsorBlock categories)
+	// Checkboxes (except SponsorBlock categories)
 	document.querySelectorAll('#configForm input[type="checkbox"]:not(.sponsorblock-category)').forEach((checkbox) => {
 		config[checkbox.name] = checkbox.checked;
 	});
@@ -51,27 +186,106 @@ function getCurrentFormConfig() {
 	});
 	config["SponsorBlock_categories"] = categories;
 
-	// Auto-detectar fuente desde la URL actual
+	// Auto-detect source from the current URL
 	const inputURL = document.getElementById("inputURL")?.value?.trim() || "";
-	const fuente = detectarFuente(inputURL);
-	if (fuente === "spotify") {
-		config["Fuente_descarga"] = "Spotify";
+	const source = detectSource(inputURL);
+	config["Fuente_descarga"] = "YouTube";
+
+	// Cookies content (Netscape format) - save the textarea content
+	const cookiesEl = document.getElementById("cookiesContent");
+	config["cookies_content"] = cookiesEl ? cookiesEl.value : "";
+
+	// Add legacy keys expected elsewhere in the code (Spanish/old names)
+	// Formats
+	if (config.audio_format) config.Formato_audio = config.audio_format;
+	if (config.video_format) config.Formato_video = config.video_format;
+
+	// Calidad (audio/video quality)
+	if (config.audio_video_quality) config.Calidad_audio_video = config.audio_video_quality;
+
+	// Download type -> Descargar_audio/Descargar_video and Tipo_descarga
+	if (config.download_type) {
+		config.Tipo_descarga = config.download_type;
+		config.Descargar_audio = config.download_type === "audio";
+		config.Descargar_video = config.download_type === "video";
 	} else {
-		config["Fuente_descarga"] = "YouTube";
+		// sensible defaults
+		config.Tipo_descarga = config.Tipo_descarga || "audio";
+		config.Descargar_audio = !!config.Descargar_audio;
+		config.Descargar_video = !!config.Descargar_video;
 	}
+
+	// Checkboxes legacy
+	if (typeof config.scrape_metadata !== "undefined") config.Scrappear_metadata = config.scrape_metadata;
+	if (typeof config.prefer_youtube_music !== "undefined") config.Preferir_YouTube_Music = config.prefer_youtube_music;
+	if (typeof config.sponsorblock_enabled !== "undefined") config.SponsorBlock_enabled = config.sponsorblock_enabled;
+
+	// SponsorBlock categories: keep both keys
+	if (config.SponsorBlock_categories && Array.isArray(config.SponsorBlock_categories)) {
+		config.sponsorblock_categories = config.SponsorBlock_categories;
+	} else if (config.sponsorblock_categories && Array.isArray(config.sponsorblock_categories)) {
+		config.SponsorBlock_categories = config.sponsorblock_categories;
+	}
+
+	// Cookies legacy
+	config.cookies = config.cookies_content || config.cookies || "";
 
 	return config;
 }
 
 function applyConfigToForm(config) {
-	// Radio buttons (sin Fuente_descarga - ahora se auto-detecta)
-	["Calidad_audio_video", "Formato_audio", "Formato_video"].forEach((name) => {
-		// Primero remover 'selected' de todos los cards del mismo grupo
+	// Normalize incoming config keys to the DOM names we use.
+	function normalizeLoadedConfig(cfg) {
+		const out = {};
+		// Radios: audio/video quality, audio format, video format
+		out.audio_video_quality =
+			cfg.audio_video_quality ?? cfg.Calidad_audio_video ?? cfg.CalidadAudioVideo ?? cfg.Calidad_audio_video ?? cfg.audio_video_quality ?? undefined;
+		out.audio_format = cfg.audio_format ?? cfg.Formato_audio ?? cfg.FormatoAudio ?? undefined;
+		out.video_format = cfg.video_format ?? cfg.Formato_video ?? cfg.FormatoVideo ?? undefined;
+
+		// Download type (radio)
+		out.download_type = cfg.download_type ?? cfg.Tipo_descarga ?? cfg.Tipo_descarga_val ?? undefined;
+
+		// Checkboxes
+		out.scrape_metadata = cfg.scrape_metadata ?? cfg.Scrappear_metadata ?? cfg.scrape_metadata ?? undefined;
+		out.prefer_youtube_music = cfg.prefer_youtube_music ?? cfg.Preferir_YouTube_Music ?? cfg.prefer_youtube_music ?? undefined;
+		out.sponsorblock_enabled = cfg.sponsorblock_enabled ?? cfg.SponsorBlock_enabled ?? cfg.sponsorblock_enabled ?? undefined;
+
+		// SponsorBlock categories (array)
+		out.sponsorblock_categories =
+			cfg.sponsorblock_categories ??
+			cfg.SponsorBlock_categories ??
+			cfg.SponsorBlock_categories ??
+			cfg.SponsorBlock_categories ??
+			cfg.sponsorblock_categories ??
+			[];
+
+		// Cookies
+		out.cookies_content = cfg.cookies_content ?? cfg.cookies_content ?? cfg.cookies ?? "";
+
+		// Ensure sensible defaults when missing
+		if (!out.audio_video_quality) out.audio_video_quality = "avg";
+		if (!out.audio_format) out.audio_format = "mp3";
+		if (!out.video_format) out.video_format = "mp4";
+		if (!out.download_type) out.download_type = "audio";
+		if (typeof out.scrape_metadata === "undefined") out.scrape_metadata = true;
+		if (typeof out.prefer_youtube_music === "undefined") out.prefer_youtube_music = false;
+		if (typeof out.sponsorblock_enabled === "undefined") out.sponsorblock_enabled = false;
+		if (!Array.isArray(out.sponsorblock_categories)) out.sponsorblock_categories = [];
+
+		return out;
+	}
+
+	const normalized = normalizeLoadedConfig(config || {});
+
+	// Radio buttons (excluding Fuente_descarga - now auto-detected)
+	["audio_video_quality", "audio_format", "video_format"].forEach((name) => {
+		// First remove 'selected' class from all cards in the group
 		document.querySelectorAll(`input[name="${name}"]`).forEach((r) => {
 			r.closest(".option-card")?.classList.remove("selected");
 		});
 
-		const value = config[name];
+		const value = normalized[name];
 		const radio = document.querySelector(`input[name="${name}"][value="${value}"]`);
 		if (radio) {
 			radio.checked = true;
@@ -79,18 +293,29 @@ function applyConfigToForm(config) {
 		}
 	});
 
-	// Checkboxes
-	["Descargar_audio", "Descargar_video", "Scrappear_metadata", "Preferir_YouTube_Music", "SponsorBlock_enabled"].forEach((name) => {
+	// Checkboxes and download type radio
+	["download_type", "scrape_metadata", "prefer_youtube_music", "sponsorblock_enabled"].forEach((name) => {
+		if (name === "download_type") {
+			// radio group
+			const value = normalized.download_type;
+			document.querySelectorAll(`input[name="download_type"]`).forEach((r) => r.closest(".option-card")?.classList.remove("selected"));
+			const radio = document.querySelector(`input[name="download_type"][value="${value}"]`);
+			if (radio) {
+				radio.checked = true;
+				radio.closest(".option-card")?.classList.add("selected");
+			}
+			return;
+		}
 		const checkbox = document.querySelector(`input[name="${name}"]`);
 		if (checkbox) {
-			checkbox.checked = !!config[name];
+			checkbox.checked = !!normalized[name];
 			checkbox.closest(".option-card")?.classList.toggle("selected", checkbox.checked);
 		}
 	});
 
 	// SponsorBlock categories
-	if (config.SponsorBlock_categories && Array.isArray(config.SponsorBlock_categories)) {
-		config.SponsorBlock_categories.forEach((cat) => {
+	if (Array.isArray(normalized.sponsorblock_categories)) {
+		normalized.sponsorblock_categories.forEach((cat) => {
 			const checkbox = document.querySelector(`.sponsorblock-category[value="${cat}"]`);
 			if (checkbox) {
 				checkbox.checked = true;
@@ -101,12 +326,47 @@ function applyConfigToForm(config) {
 
 	// Toggle SponsorBlock categories visibility
 	toggleSponsorBlockCategories();
+
+	// Restore cookies content if provided in config
+	const cookiesEl = document.getElementById("cookiesContent");
+	if (cookiesEl && normalized.cookies_content) {
+		cookiesEl.value = normalized.cookies_content;
+	}
+}
+
+// Validate that the text is a valid Netscape cookies file (or empty)
+function isValidNetscapeCookies(text) {
+	if (!text) return true; // vacío permitido
+	const lines = text.split(/\r?\n/);
+	for (let raw of lines) {
+		const line = raw.trim();
+		if (!line) continue; // saltar líneas vacías
+		if (line.startsWith("#")) continue; // comentarios permitidos
+
+		// Preferir tab-separated fields, pero aceptar whitespace
+		let parts = line.split("\t");
+		if (parts.length !== 7) parts = line.split(/\s+/);
+		// Netscape spec is 7 fields, but some exports omit the final value column.
+		if (parts.length === 6) parts.push("");
+		if (parts.length !== 7) return false;
+
+		const [domain, flag, path, secure, expiration, name, value] = parts.map((p) => p.trim());
+
+		if (!name) return false;
+
+		if (!/^[0-9]+$/.test(expiration)) return false;
+
+		const boolPattern = /^(true|false|TRUE|FALSE|0|1)$/;
+		if (!boolPattern.test(secure)) return false;
+		if (!boolPattern.test(flag)) return false;
+	}
+	return true;
 }
 
 // ============================================
-// Auto-detección de fuente desde URL
+// Auto-detect source from URL
 // ============================================
-function detectarFuente(url) {
+function detectSource(url) {
 	if (!url) return null;
 	const urlLower = url.toLowerCase();
 
@@ -120,8 +380,8 @@ function detectarFuente(url) {
 	return null;
 }
 
-function esURLValida(url) {
-	return detectarFuente(url) !== null;
+function isValidURL(url) {
+	return detectSource(url) !== null;
 }
 
 // ============================================
@@ -141,17 +401,19 @@ function createFormatControls(url, currentFormat) {
 	const videoFormats = ["mp4", "mkv", "webm", "mov"];
 	const formats = currentFormat === "audio" ? audioFormats : videoFormats;
 	const globalFormat = currentFormat === "audio" ? currentConfig.Formato_audio || "mp3" : currentConfig.Formato_video || "mp4";
+	const audioLabel = t("common.audio");
+	const videoLabel = t("common.video");
 
 	return `
 		<div class="unified-format-controls">
 			<div class="btn-group btn-group-sm" role="group">
 				<button type="button" class="btn btn-outline-secondary format-btn-audio ${currentFormat === "audio" ? "active" : ""}" 
 						data-url="${url}" onclick="setItemFormatType(event, '${url}', 'audio')">
-					<i class="fa-solid fa-music"></i> Audio
+					<i class="fa-solid fa-music"></i> ${audioLabel}
 				</button>
 				<button type="button" class="btn btn-outline-secondary format-btn-video ${currentFormat === "video" ? "active" : ""}" 
 						data-url="${url}" onclick="setItemFormatType(event, '${url}', 'video')">
-					<i class="fa-solid fa-video"></i> Video
+					<i class="fa-solid fa-video"></i> ${videoLabel}
 				</button>
 			</div>
 			<div class="custom-dropdown ms-2" data-url="${url}">
@@ -197,7 +459,7 @@ function setItemFormatType(event, url, format) {
 	updateFileFormatDropdown(url, format);
 
 	const formatText = format.toUpperCase();
-	showToast(`Format set to ${formatText}`, "success");
+	showToast({ key: "toast.formatSet", params: { format: formatText } }, "success");
 	return true;
 }
 
@@ -245,21 +507,21 @@ function showMediaPreview(info) {
 	const content = document.getElementById("mediaPreviewContent");
 	const loading = document.getElementById("mediaPreviewLoading");
 
-	// Ocultar loading y mostrar contenido
+	// Hide loading and show content
 	loading.style.display = "none";
 	content.style.display = "flex";
 
-	// Actualizar información
+	// Update information
 	document.getElementById("mediaThumbnail").src = info.thumbnail || "https://via.placeholder.com/120x90?text=No+Image";
-	document.getElementById("mediaTitle").textContent = info.titulo || "Untitled";
-	document.getElementById("mediaAuthor").textContent = info.autor || "Unknown";
+	document.getElementById("mediaTitle").textContent = info.titulo || t("media.untitled");
+	document.getElementById("mediaAuthor").textContent = info.autor || t("media.unknown");
 	document.getElementById("mediaDuration").textContent = info.duracion || "0:00";
 
-	// Actualizar badge de fuente
+	// Update source badge
 	const currentConfig = getCurrentFormConfig();
 	const sourceBadge = document.getElementById("mediaSource");
 
-	// Determinar el texto y el icono según la configuración y la fuente
+	// Determine display text and icon based on config and source
 	let sourceText, sourceIcon, sourceClass;
 
 	if (info.fuente === "spotify") {
@@ -294,9 +556,12 @@ function showMediaPreview(info) {
 		controlsContainer.innerHTML = createFormatControls("media-preview", defaultFormat);
 	}
 
-	// Mostrar preview con animación
+	// Show preview with animation
 	preview.classList.add("visible");
 	currentMediaInfo = info;
+
+	// Ensure download button state reflects the media preview
+	if (typeof updateDownloadButton === "function") updateDownloadButton();
 
 	// Fetch SponsorBlock info if applicable
 	if (info.video_id) {
@@ -347,7 +612,7 @@ async function fetchSponsorBlockForMediaPreview(info) {
 				sbBadge.style.display = "inline-flex";
 			}
 			// Show SponsorBlock indicator toast
-			showToast(`SponsorBlock: ${data.segment_count} segment(s) will be removed`, "info");
+			showToast({ key: "toast.sponsorblockRemoved", params: { count: data.segment_count } }, "info");
 		}
 	} catch (error) {
 		console.error("Error fetching SponsorBlock for media preview:", error);
@@ -358,6 +623,9 @@ function hideMediaPreview() {
 	const preview = document.getElementById("mediaPreview");
 	preview.classList.remove("visible");
 	currentMediaInfo = null;
+
+	// Update download button state
+	if (typeof updateDownloadButton === "function") updateDownloadButton();
 }
 
 function showMediaPreviewLoading() {
@@ -376,6 +644,7 @@ async function fetchMediaInfo(url) {
 
 		const formData = new FormData();
 		formData.append("url", url);
+		formData.append("user_config", JSON.stringify(getCurrentFormConfig()));
 		formData.append("csrf_token", window.APP_DATA.csrfToken);
 
 		const response = await fetch("/media_info", {
@@ -405,7 +674,7 @@ async function fetchMediaInfo(url) {
 	}
 }
 
-// Cerrar media preview
+// Close media preview
 document.getElementById("closeMediaPreview")?.addEventListener("click", function () {
 	hideMediaPreview();
 });
@@ -478,9 +747,20 @@ let mediaPreviewFileFormat = null;
 const TOAST_DURATION = 2500; // ms — auto-dismiss delay
 const TOAST_EXIT_MS = 350; // must match CSS toastSlideOut duration
 
-function showToast(message, type = "primary") {
+function resolveI18nMessage(message, params) {
+	if (message && typeof message === "object" && message.key) {
+		return t(message.key, message.params ?? params);
+	}
+	if (typeof message === "string" && message.startsWith("i18n:")) {
+		return t(message.slice("i18n:".length), params);
+	}
+	return String(message ?? "");
+}
+
+function showToast(message, type = "primary", params = undefined) {
 	const container = document.getElementById("toastContainer");
 	const toastId = "toast-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6);
+	const resolvedMessage = resolveI18nMessage(message, params);
 
 	// Map legacy "primary" → "info" for the CSS class, keep others as-is
 	const cssType = type === "primary" ? "info" : type;
@@ -498,7 +778,7 @@ function showToast(message, type = "primary") {
 			<div class="d-flex align-items-center">
 				<div class="toast-body">
 					<i class="fa-solid ${icons[type] || icons.info}"></i>
-					${message}
+					${resolvedMessage}
 				</div>
 				<button type="button" class="btn-close me-2 m-auto" onclick="closeToast('${toastId}')" aria-label="Close"></button>
 			</div>
@@ -551,12 +831,34 @@ function closeToast(toastId) {
 // Inicialización al cargar la página
 // ============================================
 document.addEventListener("DOMContentLoaded", function () {
+	// i18n: auto-detect browser language (es/* => ES, otherwise EN) and restore persisted choice
+	initLanguage();
+
 	// Cargar configuración guardada
 	const savedConfig = getConfig();
 	applyConfigToForm(savedConfig);
 
 	// Actualizar el input hidden con la configuración
 	document.getElementById("userConfigInput").value = JSON.stringify(savedConfig);
+
+	// Guardar/actualizar el contenido de cookies en localStorage cuando el usuario lo edite
+	const cookiesEl = document.getElementById("cookiesContent");
+	if (cookiesEl) {
+		cookiesEl.addEventListener("input", function () {
+			const val = this.value;
+			const valid = isValidNetscapeCookies(val);
+			this.classList.toggle("is-invalid", !valid);
+			if (!valid) {
+				// Do not save invalid content
+				return;
+			}
+			const current = getConfig();
+			current.cookies_content = val;
+			saveConfig(current);
+			// Mantener el input hidden sincronizado
+			document.getElementById("userConfigInput").value = JSON.stringify(current);
+		});
+	}
 
 	// ============================================
 	// Config Form - Guardar en localStorage
@@ -568,14 +870,23 @@ document.addEventListener("DOMContentLoaded", function () {
 		const originalContent = btn.innerHTML;
 
 		// Show loading state
-		btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Saving...';
+		btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>' + t("btn.saving");
 		btn.disabled = true;
 
 		const config = getCurrentFormConfig();
 
+		// Validar cookies antes de guardar
+		if (!isValidNetscapeCookies(config.cookies_content)) {
+			showToast({ key: "toast.invalidCookies" }, "warning");
+			// Restore button
+			btn.innerHTML = originalContent;
+			btn.disabled = false;
+			return;
+		}
+
 		setTimeout(() => {
 			if (saveConfig(config)) {
-				showToast("Settings saved to your browser!", "success");
+				showToast({ key: "toast.settingsSaved" }, "success");
 				// Actualizar el input hidden
 				document.getElementById("userConfigInput").value = JSON.stringify(config);
 
@@ -587,7 +898,7 @@ document.addEventListener("DOMContentLoaded", function () {
 				}
 				modalInstance.hide();
 			} else {
-				showToast("Error saving settings", "danger");
+				showToast({ key: "toast.settingsSaveError" }, "danger");
 			}
 
 			// Restore button
@@ -616,6 +927,9 @@ document.addEventListener("DOMContentLoaded", function () {
 			this.closest(".option-card").classList.toggle("selected", this.checked);
 		});
 	});
+
+	// Ensure download button reflects initial state
+	if (typeof updateDownloadButton === "function") updateDownloadButton();
 });
 
 // ============================================
@@ -645,7 +959,7 @@ let playlistData = null;
 let selectedItems = new Set();
 let playlistCheckTimeout = null;
 
-// Función para verificar si es una URL de playlist
+// Function to check if a URL is a playlist
 function isPlaylistURL(url) {
 	if (!url) return false;
 	const urlLower = url.toLowerCase();
@@ -656,14 +970,14 @@ function isPlaylistURL(url) {
 	);
 }
 
-// Detección automática de URL al escribir
+// Auto-detect URL while typing
 document.getElementById("inputURL").addEventListener("input", function () {
-	// Si ya estamos procesando un paste, ignorar
+	// If we're processing a paste event, ignore input
 	if (isProcessingInput) return;
 
 	const url = this.value.trim();
 
-	// Cancelar timeout anterior si existe
+	// Clear previous timeouts if present
 	if (playlistCheckTimeout) {
 		clearTimeout(playlistCheckTimeout);
 	}
@@ -671,7 +985,7 @@ document.getElementById("inputURL").addEventListener("input", function () {
 		clearTimeout(mediaPreviewTimeout);
 	}
 
-	// Si el campo está vacío, ocultar todo
+	// If the field is empty, hide everything
 	if (!url) {
 		hideMediaPreview();
 		if (playlistData) {
@@ -683,8 +997,8 @@ document.getElementById("inputURL").addEventListener("input", function () {
 		return;
 	}
 
-	// Si no es una URL válida, ocultar previews
-	if (!esURLValida(url)) {
+	// If it's not a valid URL, hide previews
+	if (!isValidURL(url)) {
 		hideMediaPreview();
 		if (playlistData) {
 			document.getElementById("playlistContainer").style.display = "none";
@@ -695,14 +1009,14 @@ document.getElementById("inputURL").addEventListener("input", function () {
 		return;
 	}
 
-	// Si es una URL de playlist
+	// If it's a playlist URL
 	if (isPlaylistURL(url)) {
 		hideMediaPreview();
 		playlistCheckTimeout = setTimeout(() => {
 			checkForPlaylist();
 		}, 800);
 	} else {
-		// Es una URL individual - mostrar preview
+		// Single item URL - show preview
 		if (playlistData) {
 			document.getElementById("playlistContainer").style.display = "none";
 			playlistData = null;
@@ -715,12 +1029,12 @@ document.getElementById("inputURL").addEventListener("input", function () {
 	}
 });
 
-// También verificar al pegar una URL
+// Also check when pasting a URL
 document.getElementById("inputURL").addEventListener("paste", function () {
-	// Marcar que estamos procesando para evitar duplicados
+	// Mark that we're processing to avoid duplicates
 	isProcessingInput = true;
 
-	// Cancelar timeouts anteriores
+	// Cancel previous timeouts
 	if (playlistCheckTimeout) clearTimeout(playlistCheckTimeout);
 	if (mediaPreviewTimeout) clearTimeout(mediaPreviewTimeout);
 
@@ -731,7 +1045,7 @@ document.getElementById("inputURL").addEventListener("paste", function () {
 			return;
 		}
 
-		if (!esURLValida(url)) {
+		if (!isValidURL(url)) {
 			hideMediaPreview();
 			isProcessingInput = false;
 			return;
@@ -741,7 +1055,7 @@ document.getElementById("inputURL").addEventListener("paste", function () {
 			hideMediaPreview();
 			await checkForPlaylist();
 		} else {
-			// URL individual - obtener info
+			// Single item URL - fetch info
 			await fetchMediaInfo(url);
 		}
 
@@ -763,12 +1077,12 @@ async function performSearch() {
 	const query = input.value.trim();
 
 	if (!query) {
-		showToast("Please enter a URL or search term", "warning");
+		showToast({ key: "toast.enterUrlOrSearch" }, "warning");
 		return;
 	}
 
-	// Si es URL válida, usar el flujo existente
-	if (esURLValida(query)) {
+	// If it's a valid URL, use the existing flow
+	if (isValidURL(query)) {
 		if (isPlaylistURL(query)) {
 			await checkForPlaylist();
 		} else {
@@ -785,12 +1099,21 @@ async function performSearch() {
 	const loading = document.getElementById("playlistLoading");
 	const itemsContainer = document.getElementById("playlistItemsContainer");
 
-	container.style.display = "block";
-	loading.style.display = "block";
-	itemsContainer.style.display = "none";
-	document.getElementById("playlistTitle").textContent = `Searching: ${query}...`;
-	document.getElementById("playlistMeta").textContent = "Searching YouTube...";
-	document.getElementById("playlistThumbnail").style.display = "none";
+	if (container) container.style.display = "block";
+	// Re-insert skeletons into the scrollable items container so they're shown every search
+	if (itemsContainer) {
+		itemsContainer.innerHTML = renderPlaylistSkeletons(5);
+		itemsContainer.style.display = "block";
+	}
+	// Re-resolve loading after injecting skeletons
+	const newLoading = document.getElementById("playlistLoading");
+	if (newLoading) newLoading.style.display = "block";
+	const titleEl = document.getElementById("playlistTitle");
+	if (titleEl) titleEl.textContent = t("search.searching", { query });
+	const metaEl = document.getElementById("playlistMeta");
+	if (metaEl) metaEl.textContent = t("search.searchingYouTube");
+	const thumbEl = document.getElementById("playlistThumbnail");
+	if (thumbEl) thumbEl.style.display = "none";
 
 	try {
 		const formData = new FormData();
@@ -798,7 +1121,8 @@ async function performSearch() {
 		formData.append("csrf_token", window.APP_DATA.csrfToken);
 
 		// Check if YTM preference is enabled
-		const preferYTM = document.querySelector('input[name="Preferir_YouTube_Music"]')?.checked;
+		const preferYTM =
+			document.querySelector('input[name="prefer_youtube_music"]')?.checked || document.querySelector('input[name="Preferir_YouTube_Music"]')?.checked;
 		formData.append("prefer_ytmusic", preferYTM ? "true" : "false");
 
 		const response = await fetch(window.APP_DATA.urls.search_youtube, {
@@ -809,16 +1133,32 @@ async function performSearch() {
 		const data = await response.json();
 
 		if (data.success && data.playlist) {
+			// Mark this playlist object as a search result so UI doesn't auto-select items
+			data.playlist.is_search = true;
 			showPlaylistSelector(data.playlist);
 		} else {
 			container.style.display = "none";
-			showToast(data.error || "No results found", "warning");
+			if (data.error) {
+				showToast(data.error, "warning");
+			} else {
+				showToast({ key: "toast.noResults" }, "warning");
+			}
 		}
 	} catch (error) {
 		console.error("Search error:", error);
 		container.style.display = "none";
-		showToast("Error performing search", "danger");
+		showToast({ key: "toast.searchError" }, "danger");
 	}
+}
+
+// Render skeleton HTML for the playlist items area
+function renderPlaylistSkeletons(count = 5) {
+	let html = '<div id="playlistLoading">';
+	for (let i = 0; i < count; i++) {
+		html += '<div class="skeleton skeleton-item"></div>';
+	}
+	html += "</div>";
+	return html;
 }
 
 async function checkForPlaylist() {
@@ -832,17 +1172,25 @@ async function checkForPlaylist() {
 	const loading = document.getElementById("playlistLoading");
 	const itemsContainer = document.getElementById("playlistItemsContainer");
 
-	// Mostrar loading
-	container.style.display = "block";
-	loading.style.display = "block";
-	itemsContainer.style.display = "none";
-	document.getElementById("playlistTitle").textContent = "Loading playlist...";
-	document.getElementById("playlistMeta").textContent = "Getting info...";
-	document.getElementById("playlistThumbnail").style.display = "none";
+	// Mostrar loading (skeletons are inside itemsContainer so show it)
+	if (container) container.style.display = "block";
+	if (itemsContainer) {
+		itemsContainer.innerHTML = renderPlaylistSkeletons(5);
+		itemsContainer.style.display = "block";
+	}
+	const newLoading2 = document.getElementById("playlistLoading");
+	if (newLoading2) newLoading2.style.display = "block";
+	const titleEl2 = document.getElementById("playlistTitle");
+	if (titleEl2) titleEl2.textContent = t("playlist.loading");
+	const metaEl2 = document.getElementById("playlistMeta");
+	if (metaEl2) metaEl2.textContent = t("media.gettingInfo");
+	const thumbEl2 = document.getElementById("playlistThumbnail");
+	if (thumbEl2) thumbEl2.style.display = "none";
 
 	try {
 		const formData = new FormData();
 		formData.append("url", url);
+		formData.append("user_config", JSON.stringify(getCurrentFormConfig()));
 		formData.append("csrf_token", window.APP_DATA.csrfToken);
 
 		const response = await fetch(window.APP_DATA.urls.playlist_info, {
@@ -856,44 +1204,64 @@ async function checkForPlaylist() {
 			showPlaylistSelector(data.playlist);
 		} else if (data.es_playlist === false) {
 			container.style.display = "none";
-			showToast("This URL is not a playlist. You can download it directly.", "info");
+			showToast({ key: "toast.notPlaylist" }, "info");
 		} else {
 			container.style.display = "none";
-			showToast(data.error || "Could not get playlist", "danger");
+			if (data.error) {
+				showToast(data.error, "danger");
+			} else {
+				showToast({ key: "toast.couldNotGetPlaylist" }, "danger");
+			}
 		}
 	} catch (error) {
 		console.error("Error:", error);
 		container.style.display = "none";
-		showToast("Error checking playlist", "danger");
+		showToast({ key: "toast.checkPlaylistError" }, "danger");
 	}
 }
 
 function showPlaylistSelector(playlist) {
 	playlistData = playlist;
-	selectedItems = new Set(playlist.items.map((item) => item.url)); // Select all by default
+	// For regular playlists (actual playlist/album URLs) keep previous behavior (select all by default).
+	// For search results (marked with is_search) start with nothing selected so user can choose.
+	if (playlist.is_search) {
+		selectedItems = new Set();
+	} else {
+		selectedItems = new Set(playlist.items.map((item) => item.url)); // Select all by default
+	}
 
 	const container = document.getElementById("playlistContainer");
 	const loading = document.getElementById("playlistLoading");
 	const itemsContainer = document.getElementById("playlistItemsContainer");
 
-	// Update header info
-	document.getElementById("playlistTitle").textContent = playlist.titulo;
-	document.getElementById("playlistMeta").textContent = `${playlist.total} videos • ${playlist.autor}`;
+	// Update header info (defensive access)
+	const titleEl = document.getElementById("playlistTitle");
+	if (titleEl) titleEl.textContent = playlist.titulo;
+	const metaEl = document.getElementById("playlistMeta");
+	if (metaEl)
+		metaEl.textContent = t("playlist.meta", {
+			count: playlist.total,
+			videos: t("playlist.videosLabel"),
+			author: playlist.autor,
+		});
 
 	if (playlist.thumbnail) {
 		const thumb = document.getElementById("playlistThumbnail");
-		thumb.src = playlist.thumbnail;
-		thumb.style.display = "block";
+		if (thumb) {
+			thumb.src = playlist.thumbnail;
+			thumb.style.display = "block";
+		}
 	}
 
-	// Show container with loading
-	container.style.display = "block";
-	loading.style.display = "block";
-	itemsContainer.style.display = "none";
+	// Show container with loading (skeletons are inside the scrollable items container)
+	if (container) container.style.display = "block";
+	if (loading) loading.style.display = "block";
+	if (itemsContainer) itemsContainer.style.display = "block";
 
 	// Build items HTML
 	let html = "";
 	playlist.items.forEach((item, index) => {
+		const isSelected = selectedItems.has(item.url);
 		// Default format from global config
 		const currentConfig = getCurrentFormConfig();
 		const defaultFormat = currentConfig.Descargar_video ? "video" : "audio";
@@ -918,11 +1286,11 @@ function showPlaylistSelector(playlist) {
 		const badgeHtml = `<span class="source-badge-inline ${sourceClass}"><i class="${sourceIcon}"></i> ${sourceText}</span>`;
 
 		html += `
-            <div class="media-item selected" data-url="${item.url}" data-duration="${item.duracion_segundos}" data-index="${index}">
-                <span class="badge bg-secondary media-item-number">${index + 1}</span>
-                <input type="checkbox" class="form-check-input media-item-checkbox" 
-                       checked data-url="${item.url}" 
-                       onchange="togglePlaylistItem(this)">
+				<div class="media-item ${isSelected ? "selected" : ""}" data-url="${item.url}" data-duration="${item.duracion_segundos}" data-index="${index}">
+					<span class="badge bg-secondary media-item-number">${index + 1}</span>
+					<input type="checkbox" class="form-check-input media-item-checkbox" 
+						${isSelected ? "checked" : ""} data-url="${item.url}" 
+						onchange="togglePlaylistItem(this)">
                 <img src="${item.thumbnail || "https://via.placeholder.com/120x90?text=No+Image"}" 
                      alt="${item.titulo}" class="media-item-thumbnail"
                      onerror="this.src='https://via.placeholder.com/120x90?text=No+Image'">
@@ -932,7 +1300,7 @@ function showPlaylistSelector(playlist) {
 						${badgeHtml}
                         <span class="mx-2">•</span>
                         <i class="fa-solid fa-user me-1"></i>
-                        <span>${item.autor || "Unknown"}</span>
+						<span>${item.autor || t("media.unknown")}</span>
                         <span class="mx-2">•</span>
                         <i class="fa-solid fa-clock me-1"></i>
                         <span class="item-duration" data-original="${item.duracion}">${item.duracion}</span>
@@ -955,9 +1323,11 @@ function showPlaylistSelector(playlist) {
 
 	// Update UI
 	setTimeout(() => {
-		loading.style.display = "none";
-		itemsContainer.innerHTML = html;
-		itemsContainer.style.display = "block";
+		if (loading) loading.style.display = "none";
+		if (itemsContainer) {
+			itemsContainer.innerHTML = html;
+			itemsContainer.style.display = "block";
+		}
 		updatePlaylistCounts();
 		updateDownloadButton();
 
@@ -1014,15 +1384,39 @@ function updatePlaylistCounts() {
 }
 
 function updateDownloadButton() {
-	const btn = document.getElementById("downloadBtnText");
-	const isPlaylistMode = playlistData !== null && selectedItems.size > 0;
+	const btnText = document.getElementById("downloadBtnText");
+	const downloadBtn = document.getElementById("downloadBtn");
 
-	if (isPlaylistMode) {
-		btn.textContent = `Download ${selectedItems.size} item(s)`;
+	// Prioritize playlist mode: if we have playlist data, button enabled only when items selected
+	if (playlistData !== null) {
+		if (selectedItems.size > 0) {
+			btnText.textContent = t("btn.downloadCount", { count: selectedItems.size });
+			downloadBtn.disabled = false;
+			downloadBtn.classList.remove("btn-secondary");
+			downloadBtn.classList.add("btn-primary");
+		} else {
+			// Playlist with no selection -> disable
+			btnText.textContent = t("btn.startDownload");
+			downloadBtn.disabled = true;
+			downloadBtn.classList.remove("btn-primary");
+			downloadBtn.classList.add("btn-secondary");
+		}
+	} else if (currentMediaInfo !== null) {
+		// Single media preview available -> enable
+		btnText.textContent = t("btn.startDownload");
+		downloadBtn.disabled = false;
+		downloadBtn.classList.remove("btn-secondary");
+		downloadBtn.classList.add("btn-primary");
 	} else {
-		btn.textContent = "Start Download";
+		// No selection and no media -> disabled
+		btnText.textContent = t("btn.startDownload");
+		downloadBtn.disabled = true;
+		downloadBtn.classList.remove("btn-primary");
+		downloadBtn.classList.add("btn-secondary");
 	}
 
+	// Hidden input expects a boolean indicating whether we're in playlist mode with selections
+	const isPlaylistMode = playlistData !== null && selectedItems.size > 0;
 	document.getElementById("isPlaylistModeInput").value = isPlaylistMode ? "true" : "false";
 	document.getElementById("selectedUrlsInput").value = isPlaylistMode ? JSON.stringify(Array.from(selectedItems)) : "";
 }
@@ -1204,7 +1598,7 @@ function bulkSetAudio() {
 
 		updateFileFormatDropdown(item.url, "audio");
 	});
-	showToast("All items set to AUDIO format", "success");
+		showToast({ key: "toast.allItemsAudio" }, "success");
 }
 
 function bulkSetVideo() {
@@ -1223,7 +1617,7 @@ function bulkSetVideo() {
 
 		updateFileFormatDropdown(item.url, "video");
 	});
-	showToast("All items set to VIDEO format", "success");
+		showToast({ key: "toast.allItemsVideo" }, "success");
 }
 
 function bulkSetFormat(format) {
@@ -1267,7 +1661,7 @@ function bulkSetFormat(format) {
 			setItemFileFormat(item.url, format);
 		}
 	});
-	showToast(`All items set to ${format.toUpperCase()} file format`, "success");
+	showToast({ key: "toast.allItemsFileFormat", params: { format: format.toUpperCase() } }, "success");
 }
 
 // Close playlist selector
@@ -1281,10 +1675,15 @@ document.getElementById("closePlaylistBtn").addEventListener("click", function (
 });
 
 // ============================================
-// Download Form
+// Download Form — SSE Real-Time Progress
 // ============================================
 document.getElementById("downloadForm").addEventListener("submit", function (event) {
 	event.preventDefault();
+
+	// Mark download as started so beforeunload will warn the user
+	if (window.OfflinerDownload && typeof window.OfflinerDownload.start === "function") {
+		window.OfflinerDownload.start();
+	}
 
 	const downloadBtn = document.getElementById("downloadBtn");
 	const downloadingBtn = document.getElementById("downloadingBtn");
@@ -1298,16 +1697,16 @@ document.getElementById("downloadForm").addEventListener("submit", function (eve
 	const isPlaylistMode = document.getElementById("isPlaylistModeInput").value === "true";
 
 	if (!inputURL && !isPlaylistMode) {
-		showToast("Please enter a URL or song name", "warning");
+		showToast({ key: "toast.enterUrlOrSong" }, "warning");
 		return;
 	}
 
 	if (isPlaylistMode && selectedItems.size === 0) {
-		showToast("Select at least one playlist item", "warning");
+		showToast({ key: "toast.selectOneItem" }, "warning");
 		return;
 	}
 
-	// Actualizar configuración antes de enviar
+	// Update config before sending
 	const currentConfig = getCurrentFormConfig();
 
 	// Apply media preview format overrides for individual videos
@@ -1339,7 +1738,6 @@ document.getElementById("downloadForm").addEventListener("submit", function (eve
 	if (isPlaylistMode) {
 		const itemConfigs = getItemCustomFormats();
 
-		// Create or update hidden input for item configs
 		let itemConfigInput = document.getElementById("itemConfigsInput");
 		if (!itemConfigInput) {
 			itemConfigInput = document.createElement("input");
@@ -1351,98 +1749,118 @@ document.getElementById("downloadForm").addEventListener("submit", function (eve
 		itemConfigInput.value = JSON.stringify(itemConfigs);
 	}
 
+	// --- Show progress UI ---
 	downloadBtn.style.display = "none";
 	downloadingBtn.style.display = "block";
 	progressContainer.style.display = "block";
 
-	const progressSteps = [
-		{ percent: 5, status: "Starting...", detail: "Connecting to server" },
-		{ percent: 15, status: "Searching...", detail: "Analyzing URL or search term" },
-		{ percent: 25, status: "Found", detail: "Preparing download" },
-		{ percent: 40, status: "Downloading...", detail: "Getting audio stream" },
-		{ percent: 55, status: "Downloading...", detail: "Getting video stream" },
-		{ percent: 70, status: "Processing...", detail: "Converting format" },
-		{ percent: 85, status: "Finishing...", detail: "Adding metadata" },
-		{ percent: 95, status: "Almost done...", detail: "Preparing file" },
-	];
-
-	let currentStep = 0;
-	const startTime = Date.now();
+	let lastPercent = 0;
 
 	function updateProgress(percent, status, detail) {
-		progressBar.style.width = percent + "%";
-		progressPercentage.textContent = percent + "%";
-		progressStatus.textContent = status;
-		progressDetail.textContent = detail || "";
+		const pct = Math.max(percent || 0, lastPercent);
+		lastPercent = pct;
+		progressBar.style.width = pct + "%";
+		progressPercentage.textContent = pct + "%";
+		progressStatus.textContent = resolveI18nMessage(status) || "";
+		progressDetail.textContent = resolveI18nMessage(detail) || "";
 	}
 
-	updateProgress(2, "Starting...", "Sending request");
+	function resetUI() {
+		setTimeout(() => {
+			downloadBtn.style.display = "block";
+			downloadingBtn.style.display = "none";
+			progressContainer.style.display = "none";
+			progressBar.style.width = "0%";
+			progressBar.classList.remove("bg-success", "bg-danger");
+			progressBar.classList.add("bg-primary", "progress-bar-animated");
+			lastPercent = 0;
+		}, 3000);
+	}
 
-	const progressInterval = setInterval(() => {
-		const elapsed = (Date.now() - startTime) / 1000;
-		let target = Math.min(Math.floor(elapsed / 3), progressSteps.length - 1);
-
-		if (currentStep < target) {
-			currentStep = target;
-			const step = progressSteps[currentStep];
-			updateProgress(step.percent, step.status, step.detail);
-		}
-	}, 500);
+	updateProgress(2, { key: "progress.starting" }, { key: "progress.sendingRequest" });
 
 	const formData = new FormData(event.target);
 
+	// Step 1: POST to /descargar — start download, receive request_id
 	fetch(window.APP_DATA.urls.descargar, { method: "POST", body: formData })
 		.then(async (response) => {
-			clearInterval(progressInterval);
-
+			let data;
+			try {
+				data = await response.json();
+			} catch (e) {
+				throw new Error(t("error.invalidServerResponse"));
+			}
 			if (!response.ok) {
-				// Intentar obtener mensaje de error del servidor
-				let errorMsg = "Could not complete download";
-				try {
-					const errorData = await response.json();
-					if (errorData.error) {
-						errorMsg = errorData.error;
+				throw new Error(data.error || t("error.couldNotStartDownload"));
+			}
+			const requestId = data.request_id;
+			if (!requestId) {
+				throw new Error(t("error.noRequestId"));
+			}
+
+			updateProgress(5, { key: "progress.downloadStarted" }, { key: "progress.connectingStream" });
+
+			// Step 2: Open SSE connection for real-time progress
+			return new Promise((resolve, reject) => {
+				let isCompleted = false;
+				const evtSource = new EventSource(`/stream_progress/${requestId}`);
+
+				evtSource.onmessage = function (event) {
+					try {
+						const progress = JSON.parse(event.data);
+
+						// Build detail text with speed and ETA
+						let detailText = progress.detail || "";
+						if (progress.speed) detailText += ` \u2022 ${progress.speed}`;
+						if (progress.eta) detailText += ` \u2022 ${t("progress.etaLabel")}: ${progress.eta}`;
+
+						updateProgress(progress.percent, progress.status, detailText);
+
+						if (progress.complete && !progress.error) {
+							isCompleted = true;
+							evtSource.close();
+							updateProgress(100, { key: "progress.completed" }, { key: "progress.savingFile" });
+							progressBar.classList.remove("progress-bar-animated");
+							progressBar.classList.replace("bg-primary", "bg-success");
+
+							// Use a direct anchor navigation to trigger the download.
+							// fetch()+blob() competes with the SSE connection for the
+							// browser's per-host connection pool, causing the request
+							// to hang.  A native <a> click uses a separate download
+							// channel that is not subject to this limitation.
+							setTimeout(() => {
+								const a = document.createElement("a");
+								a.href = `/download_file/${requestId}`;
+								a.download = "";
+								a.style.display = "none";
+								document.body.appendChild(a);
+								a.click();
+								a.remove();
+								showToast({ key: "toast.downloadStarted" }, "success");
+								resolve();
+							}, 150);
+						} else if (progress.error) {
+							isCompleted = true;
+							evtSource.close();
+							reject(new Error(progress.error));
+						}
+					} catch (parseErr) {
+						console.error("Error parsing SSE data:", parseErr);
 					}
-				} catch (e) {
-					// No es JSON, usar mensaje genérico
-				}
-				updateProgress(100, "Error", errorMsg);
-				progressBar.classList.replace("bg-primary", "bg-danger");
-				throw new Error(errorMsg);
-			}
+				};
 
-			updateProgress(100, "Completed!", "Saving file...");
-			progressBar.classList.remove("progress-bar-animated");
-			progressBar.classList.replace("bg-primary", "bg-success");
-
-			const disposition = response.headers.get("Content-Disposition");
-			let filename = "download.mp3";
-
-			if (disposition && disposition.includes("filename=")) {
-				filename = disposition.split("filename=")[1].split(";")[0].trim().replace(/"/g, "");
-				if (filename.includes("\\")) filename = filename.substring(filename.lastIndexOf("\\") + 1);
-				if (filename.includes("/")) filename = filename.substring(filename.lastIndexOf("/") + 1);
-			}
-
-			return response.blob().then((blob) => ({ blob, filename }));
+				evtSource.onerror = function () {
+					evtSource.close();
+					if (!isCompleted) {
+						reject(new Error(t("toast.lostProgressStream")));
+					}
+				};
+			});
 		})
-		.then(({ blob, filename }) => {
-			const url = window.URL.createObjectURL(blob);
-			const a = document.createElement("a");
-			a.href = url;
-			a.download = filename;
-			document.body.appendChild(a);
-			a.click();
-			window.URL.revokeObjectURL(url);
-			a.remove();
-
-			showToast("Download completed: " + filename, "success");
-
-			// Limpiar el input URL después de descarga exitosa
+		.then(() => {
+			// Success — clean up UI inputs
 			document.getElementById("inputURL").value = "";
 			hideMediaPreview();
-
-			// Close playlist selector after successful download
 			if (playlistData) {
 				document.getElementById("playlistContainer").style.display = "none";
 				playlistData = null;
@@ -1451,21 +1869,114 @@ document.getElementById("downloadForm").addEventListener("submit", function (eve
 			}
 		})
 		.catch((error) => {
-			clearInterval(progressInterval);
 			progressBar.classList.remove("progress-bar-animated");
 			progressBar.classList.replace("bg-primary", "bg-danger");
-			const errorMsg = error.message || "Download error. Please try again.";
-			showToast(errorMsg, "danger");
+			const errMsg = error.message || t("toast.downloadError");
+			updateProgress(100, { key: "progress.error" }, errMsg);
+			showToast(errMsg, "danger");
 			console.error("Download error:", error);
 		})
 		.finally(() => {
-			setTimeout(() => {
-				downloadBtn.style.display = "block";
-				downloadingBtn.style.display = "none";
-				progressContainer.style.display = "none";
-				progressBar.style.width = "0%";
-				progressBar.classList.remove("bg-success", "bg-danger");
-				progressBar.classList.add("bg-primary", "progress-bar-animated");
-			}, 3000);
+			if (window.OfflinerDownload && typeof window.OfflinerDownload.finish === "function") {
+				window.OfflinerDownload.finish();
+			}
+			resetUI();
 		});
 });
+
+// Inline behaviors moved from template (kept separate from main dashboard.js)
+(function () {
+	const userConfigInput = document.getElementById("userConfigInput");
+	function parseConfig() {
+		try {
+			return JSON.parse(userConfigInput.value || "{}");
+		} catch (e) {
+			return {};
+		}
+	}
+	function updateUserConfig() {
+		const cfg = parseConfig();
+		const sel = document.querySelector('input[name="download_type"]:checked');
+		if (sel) cfg.download_type = sel.value;
+		userConfigInput.value = JSON.stringify(cfg);
+	}
+
+	function refreshOptionCardSelection() {
+		document.querySelectorAll(".option-card").forEach((card) => {
+			const input = card.querySelector('input[type="radio"], input[type="checkbox"]');
+			if (!input) return;
+			if (input.type === "radio") {
+				const groupChecked = document.querySelector('input[name="' + input.name + '"]:checked');
+				if (groupChecked && card.contains(groupChecked)) card.classList.add("selected");
+				else card.classList.remove("selected");
+			} else {
+				if (input.checked) card.classList.add("selected");
+				else card.classList.remove("selected");
+			}
+		});
+	}
+
+	document.addEventListener("DOMContentLoaded", function () {
+		// wire up change handlers for download_type and option-cards
+		document.querySelectorAll('input[name="download_type"]').forEach((el) =>
+			el.addEventListener("change", function (e) {
+				updateUserConfig();
+				refreshOptionCardSelection();
+			}),
+		);
+		// wire up all inputs inside option-card to refresh selection classes
+		document
+			.querySelectorAll('.option-card input[type="radio"], .option-card input[type="checkbox"]')
+			.forEach((i) => i.addEventListener("change", refreshOptionCardSelection));
+
+		const saveBtn = document.getElementById("saveConfigBtn");
+		if (saveBtn) saveBtn.addEventListener("click", updateUserConfig);
+
+		// Prefer persisted user config; fall back to server-provided config, then defaults
+		try {
+			const loaded = getConfig();
+			const v =
+				loaded.download_type ?? loaded.Tipo_descarga ?? (window.APP_DATA && window.APP_DATA.config && window.APP_DATA.config.Tipo_descarga) ?? "audio";
+			const el = document.getElementById("tipo_" + v);
+			if (el) el.checked = true;
+			else {
+				const defaultEl = document.getElementById("tipo_audio");
+				if (defaultEl) defaultEl.checked = true;
+			}
+		} catch (e) {
+			const defaultEl = document.getElementById("tipo_audio");
+			if (defaultEl) defaultEl.checked = true;
+		}
+		// ensure labels reflect current state
+		refreshOptionCardSelection();
+		updateUserConfig();
+	});
+})();
+
+(function () {
+	// Paste button handler: reads clipboard and pastes into inputURL
+	async function pasteFromClipboard() {
+		const input = document.getElementById("inputURL");
+		if (!navigator.clipboard) {
+			// Fallback: focus input and let user paste manually
+			input.focus();
+			return;
+		}
+		try {
+			const text = await navigator.clipboard.readText();
+			if (text) {
+				input.value = text;
+				// trigger input events in case other scripts listen
+				input.dispatchEvent(new Event("input", { bubbles: true }));
+			}
+		} catch (e) {
+			// ignore errors and focus input
+			input.focus();
+		}
+	}
+
+	document.addEventListener("DOMContentLoaded", function () {
+		const pasteBtn = document.getElementById("pasteBtn");
+		if (pasteBtn) pasteBtn.addEventListener("click", pasteFromClipboard);
+	});
+})();

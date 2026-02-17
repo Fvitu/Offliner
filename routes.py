@@ -6,9 +6,14 @@ Contains all @app.route endpoints.
 import os
 import uuid
 import json
+import time
 import threading
 import shutil
+import logging
 import yt_dlp
+
+import redis as _redis
+from rq import Queue as _RQQueue
 
 from flask import (
     render_template,
@@ -28,62 +33,55 @@ from config import get_config
 
 # Base directory for the application
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+logger = logging.getLogger(__name__)
 
 # Get configuration
 app_config = get_config()
 
+# ============================================
+# Redis & RQ Queue — initialised once per process
+# ============================================
+# The Redis URL comes from the app config; the connection is created eagerly so
+# that both the progress store and the RQ queue share the same Redis instance.
+
+_redis_conn: _redis.Redis | None = None
+_task_queue: _RQQueue | None = None
+
+
+def init_rq(redis_url: str | None = None) -> _RQQueue:
+    """Create (or return the cached) RQ Queue backed by Redis.
+
+    Called from ``app.py`` during application startup.
+    """
+    global _redis_conn, _task_queue  # noqa: PLW0603
+    url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    if _redis_conn is None:
+        _redis_conn = _redis.Redis.from_url(url)
+    if _task_queue is None:
+        _task_queue = _RQQueue(connection=_redis_conn)
+    return _task_queue
+
+
+def get_rq_queue() -> _RQQueue:
+    """Return the module-level RQ queue, initialising lazily if needed."""
+    if _task_queue is None:
+        init_rq()
+    assert _task_queue is not None
+    return _task_queue
+
 
 # ============================================
-# Progress Manager (replaces global variables)
+# Progress Manager — backed by DownloadProgressStore in logic.py
 # ============================================
+# Imported lazily to avoid circular imports.
+# DownloadProgressStore is the thread-safe global store for SSE progress.
 
 
-class ProgressManager:
-    """Thread-safe manager for download progress tracking."""
+def _get_progress_store():
+    """Lazy import of DownloadProgressStore to avoid circular imports."""
+    from logic import DownloadProgressStore
 
-    def __init__(self):
-        self._progress = {}
-        self._lock = threading.Lock()
-
-    def create(self, task_id):
-        """Creates a new progress entry for a task."""
-        with self._lock:
-            self._progress[task_id] = {
-                "percent": 0,
-                "status": "Starting...",
-                "detail": "Preparing download",
-                "complete": False,
-                "error": None,
-            }
-
-    def update(self, task_id, **kwargs):
-        """Updates progress for a task."""
-        with self._lock:
-            if task_id in self._progress:
-                self._progress[task_id].update(kwargs)
-
-    def get(self, task_id):
-        """Gets progress for a task."""
-        with self._lock:
-            return self._progress.get(
-                task_id,
-                {
-                    "percent": 0,
-                    "status": "Waiting...",
-                    "detail": "",
-                    "complete": False,
-                    "error": None,
-                },
-            ).copy()
-
-    def remove(self, task_id):
-        """Removes a progress entry."""
-        with self._lock:
-            self._progress.pop(task_id, None)
-
-
-# Global progress manager instance
-progress_manager = ProgressManager()
+    return DownloadProgressStore
 
 
 # ============================================
@@ -269,6 +267,12 @@ def register_routes(app, limiter):
         """
         try:
             url = request.form.get("url", "").strip()
+            config_json = request.form.get("user_config", "{}")
+
+            try:
+                user_config = ModelFile.validate_config(json.loads(config_json))
+            except json.JSONDecodeError:
+                user_config = DEFAULT_CONFIG.copy()
 
             if not url:
                 return jsonify({"error": "Please enter a playlist URL."}), 400
@@ -286,7 +290,7 @@ def register_routes(app, limiter):
                     400,
                 )
 
-            info = obtener_info_playlist(url)
+            info = obtener_info_playlist(url, user_config)
 
             if not info:
                 return (
@@ -486,6 +490,12 @@ def register_routes(app, limiter):
         """
         try:
             url = request.form.get("url", "").strip()
+            config_json = request.form.get("user_config", "{}")
+
+            try:
+                user_config = ModelFile.validate_config(json.loads(config_json))
+            except json.JSONDecodeError:
+                user_config = DEFAULT_CONFIG.copy()
 
             if not url:
                 return jsonify({"error": "Empty URL"}), 400
@@ -497,7 +507,7 @@ def register_routes(app, limiter):
                     {"es_playlist": True, "fuente": detectar_fuente_url(url)}
                 )
 
-            info = obtener_info_media(url)
+            info = obtener_info_media(url, user_config)
 
             if not info:
                 return jsonify({"error": "Could not get information"}), 400
@@ -651,7 +661,7 @@ def register_routes(app, limiter):
                 try:
                     from logic import obtener_info_media
 
-                    media_info = obtener_info_media(input_url)
+                    media_info = obtener_info_media(input_url, user_config)
                     if media_info:
                         total_duration = media_info.get("duracion_segundos", 0)
                 except Exception as e:
@@ -682,12 +692,8 @@ def register_routes(app, limiter):
                 )
 
             task_id = str(uuid.uuid4())
-            progress_manager.create(task_id)
-
-            def progress_callback(percent, status, detail=""):
-                progress_manager.update(
-                    task_id, percent=percent, status=status, detail=detail
-                )
+            ProgressStore = _get_progress_store()
+            ProgressStore.create(task_id)
 
             nombre_archivo = f"descarga-{uuid.uuid4()}.zip"
             temp_dir = os.path.join(BASE_DIR, "Downloads", "Temp", task_id)
@@ -696,100 +702,61 @@ def register_routes(app, limiter):
                 shutil.rmtree(temp_dir, ignore_errors=True)
             os.makedirs(temp_dir, exist_ok=True)
 
-            if is_playlist_mode and selected_urls:
-                from logic import iniciar_descarga_selectiva
+            ProgressStore.update(task_id, temp_dir=temp_dir)
 
-                archivo_a_descargar = iniciar_descarga_selectiva(
-                    user_config,
-                    selected_urls,
-                    nombre_archivo,
-                    progress_callback,
-                    base_folder=temp_dir,
-                    item_configs=item_configs,
-                )
-            else:
-                from logic import iniciar_con_progreso
+            # --- Enqueue download task on RQ (replaces threading.Thread) ---
+            from logic import execute_download_task
 
-                archivo_a_descargar = iniciar_con_progreso(
-                    user_config,
-                    input_url,
-                    nombre_archivo,
-                    progress_callback,
-                    base_folder=temp_dir,
-                )
-
-            progress_manager.update(task_id, complete=True, percent=100)
-
-            if not archivo_a_descargar or not os.path.exists(archivo_a_descargar):
-                if os.path.exists(temp_dir):
-                    try:
-                        shutil.rmtree(temp_dir, ignore_errors=True)
-                    except Exception:
-                        pass
-                progress_manager.update(task_id, error="Could not download")
-                return jsonify({"error": "Could not download the file."}), 500
-
-            # Record successful download
-            download_tracker.record_download(user_ip, total_duration, item_count)
-
-            nombre_archivo_final = os.path.basename(archivo_a_descargar)
-            nombre_log = nombre_archivo_final.encode("ascii", "replace").decode("ascii")
-            app.logger.info(f"Download completed: {nombre_log} for IP: {user_ip}")
-
-            def cleanup_progress():
-                import time
-
-                time.sleep(60)
-                progress_manager.remove(task_id)
-
-            threading.Thread(target=cleanup_progress, daemon=True).start()
-
-            response = send_file(
-                archivo_a_descargar,
-                as_attachment=True,
-                download_name=nombre_archivo_final,
+            queue = get_rq_queue()
+            queue.enqueue(
+                execute_download_task,
+                user_config=user_config,
+                input_url=input_url,
+                task_id=task_id,
+                nombre_archivo=nombre_archivo,
+                temp_dir=temp_dir,
+                is_playlist_mode=is_playlist_mode,
+                selected_urls=selected_urls if is_playlist_mode else None,
+                item_configs=item_configs if is_playlist_mode else None,
+                redis_url=app_config.REDIS_URL,
+                job_timeout="30m",  # generous timeout for large playlists
             )
 
-            @response.call_on_close
-            def cleanup_file():
-                try:
-                    if os.path.exists(temp_dir):
-                        shutil.rmtree(temp_dir, ignore_errors=True)
-                        app.logger.info(f"Temporary directory deleted: {temp_dir}")
-                except Exception as e:
-                    app.logger.error(f"Error deleting temporary directory: {e}")
-
-            return response
+            return jsonify({"request_id": task_id})
 
         except Exception as e:
             app.logger.error(f"Error in download: {e}")
-            if temp_dir and os.path.exists(temp_dir):
-                try:
-                    shutil.rmtree(temp_dir, ignore_errors=True)
-                    app.logger.info(
-                        f"Temporary directory cleaned after error: {temp_dir}"
-                    )
-                except Exception as cleanup_error:
-                    app.logger.error(f"Error cleaning after failure: {cleanup_error}")
-
             return jsonify({"error": "An error occurred during download."}), 500
 
-    @app.route("/progress/<task_id>")
-    def get_progress(task_id):
-        """SSE endpoint for getting real-time download progress."""
+    @app.route("/stream_progress/<request_id>")
+    def stream_progress(request_id):
+        """SSE endpoint for real-time download progress."""
+        ProgressStore = _get_progress_store()
 
         def generate():
-            import time
-
             while True:
-                progress = progress_manager.get(task_id)
+                progress = ProgressStore.get(request_id)
                 data = json.dumps(progress)
-                yield f"data: {data}\n\n"
+                try:
+                    yield f"data: {data}\n\n"
+                except (GeneratorExit, BrokenPipeError, ConnectionResetError, OSError):
+                    # Client disconnected; request cancellation of server-side work
+                    try:
+                        ProgressStore.request_cancel(request_id)
+                        ProgressStore.update(
+                            request_id,
+                            status="Client disconnected",
+                            detail="Cancelling on client disconnect...",
+                            phase="cancelled",
+                        )
+                    except Exception:
+                        app.logger.exception("Failed to request cancel on disconnect")
+                    break
 
                 if progress.get("complete") or progress.get("error"):
                     break
 
-                time.sleep(0.5)
+                time.sleep(0.3)
 
         return Response(
             stream_with_context(generate()),
@@ -800,6 +767,43 @@ def register_routes(app, limiter):
                 "X-Accel-Buffering": "no",
             },
         )
+
+    @app.route("/download_file/<request_id>")
+    def download_file(request_id):
+        """Serve the completed download file and clean up."""
+        ProgressStore = _get_progress_store()
+        progress = ProgressStore.get(request_id)
+        file_path = progress.get("file_path")
+        temp_dir_path = progress.get("temp_dir")
+
+        if not file_path or not os.path.exists(file_path):
+            return jsonify({"error": "File not found or download not complete"}), 404
+
+        filename = os.path.basename(file_path)
+
+        response = send_file(
+            file_path,
+            as_attachment=True,
+            download_name=filename,
+        )
+
+        @response.call_on_close
+        def _cleanup():
+            try:
+                if temp_dir_path and os.path.exists(temp_dir_path):
+                    shutil.rmtree(temp_dir_path, ignore_errors=True)
+                    app.logger.info(f"Temp directory cleaned: {temp_dir_path}")
+            except Exception as e:
+                app.logger.error(f"Error cleaning temp dir: {e}")
+
+            # Delayed removal of progress store entry
+            def _delayed():
+                time.sleep(30)
+                ProgressStore.remove(request_id)
+
+            threading.Thread(target=_delayed, daemon=True).start()
+
+        return response
 
 
 def register_error_handlers(app):

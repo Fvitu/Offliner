@@ -1,2135 +1,1214 @@
 """
 Backend logic for Offliner.
-Contains core functions for downloading audio and video from YouTube and Spotify.
+
+All download, search, and media-resolution logic is encapsulated inside the
+``OfflinerCore`` class.  A module-level singleton (``_core``) is created on
+import so that existing callers (routes.py) can keep using the same public
+function names via thin backward-compatible wrappers defined at the bottom of
+this file.
+
 """
 
-from spotipy.oauth2 import SpotifyClientCredentials
-from mutagen.id3 import ID3, ID3NoHeaderError, APIC, TPE1, TALB, TIT2, TDRC
-from mutagen.mp3 import MP3
-from mutagen.mp4 import MP4, MP4Cover
-from mutagen.flac import FLAC, Picture
-from mutagen.wave import WAVE
-from ytmusicapi import YTMusic
+from __future__ import annotations
+
 import concurrent.futures
-import subprocess
-import requests
-import zipfile
-import spotipy
-import shutil
-import yt_dlp
-import time
+import json as _json
+import logging
 import os
 import re
-import logging
+import shutil
+import tempfile
+import threading
+import time
 import unicodedata
-import glob
+import urllib.parse
+import uuid
+import zipfile
+from pathlib import Path
+from typing import Any, Callable
 
-# Configure logging
+import redis as _redis
+import requests
+import spotipy
+import yt_dlp
+from spotipy.oauth2 import SpotifyClientCredentials
+from ytmusicapi import YTMusic
+
+# Optional: rapidfuzz for faster fuzzy matching
+try:
+    from rapidfuzz import fuzz as _rfuzz
+
+    _RAPIDFUZZ_AVAILABLE = True
+except ImportError:
+    from difflib import SequenceMatcher as _SequenceMatcher
+
+    _RAPIDFUZZ_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
-# ============================================
-# Constants and Credentials
-# ============================================
-
-# Resolve credentials from environment first, then from config.py
-from config import get_config
-
-_app_config = get_config()
-
-SPOTIFY_CLIENT_ID = (
-    os.getenv("SPOTIFY_CLIENT_ID")
-    or getattr(_app_config, "SPOTIFY_CLIENT_ID", "")
-    or ""
-)
-SPOTIFY_CLIENT_SECRET = (
-    os.getenv("SPOTIFY_CLIENT_SECRET")
-    or getattr(_app_config, "SPOTIFY_CLIENT_SECRET", "")
-    or ""
-)
-
-SPONSORBLOCK_CATEGORIES = {
-    "sponsor": "Sponsors (promociones pagadas)",
-    "intro": "Intros/Animaciones de entrada",
-    "outro": "Outros/Créditos finales",
-    "selfpromo": "Auto-promoción del creador",
-    "preview": "Previews/Avances",
-    "filler": "Relleno/Contenido no musical",
-    "interaction": "Recordatorios de suscripción/interacción",
-    "music_offtopic": "Partes sin música en videos musicales",
-}
-
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ============================================
-# Global Clients Initialization
+# Thread-safe TTL cache
 # ============================================
 
-ytmusic = None
-try:
-    ytmusic = YTMusic()
-except Exception as e:
-    logger.warning(f"Could not initialize YTMusic: {e}")
+_CACHE_MISS = object()
 
-sp = None
-try:
-    if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
-        sp_credentials = SpotifyClientCredentials(
-            client_id=SPOTIFY_CLIENT_ID, client_secret=SPOTIFY_CLIENT_SECRET
-        )
-        sp = spotipy.Spotify(
-            client_credentials_manager=sp_credentials, requests_timeout=10
-        )
-        logger.info("Spotify client initialized successfully")
-    else:
-        logger.info(
-            "Spotify credentials not provided; Spotify features will be disabled unless configured at runtime."
-        )
-except Exception as e:
-    logger.warning(f"Could not initialize Spotify: {e}")
+
+class _TTLCache:
+    """Bounded, thread-safe cache with per-entry TTL expiry."""
+
+    def __init__(self, maxsize: int = 256, ttl: float = 600.0) -> None:
+        self._data: dict[Any, tuple[float, Any]] = {}
+        self._lock = threading.Lock()
+        self._maxsize = maxsize
+        self._ttl = ttl
+
+    def get(self, key: Any) -> Any:
+        """Return cached value or ``_CACHE_MISS``."""
+        with self._lock:
+            entry = self._data.get(key)
+            if entry is not None:
+                ts, val = entry
+                if time.time() - ts < self._ttl:
+                    return val
+                del self._data[key]
+        return _CACHE_MISS
+
+    def put(self, key: Any, value: Any) -> None:
+        with self._lock:
+            now = time.time()
+            # Purge expired
+            expired = [k for k, (ts, _) in self._data.items() if now - ts >= self._ttl]
+            for k in expired:
+                del self._data[k]
+            # Evict oldest if at capacity
+            while len(self._data) >= self._maxsize:
+                oldest_key = min(self._data, key=lambda k: self._data[k][0])
+                del self._data[oldest_key]
+            self._data[key] = (now, value)
+
+
+_yt_search_cache = _TTLCache(maxsize=512, ttl=600.0)
+_ytm_search_cache = _TTLCache(maxsize=256, ttl=600.0)
 
 
 # ============================================
-# Download Result Class (replaces global variables)
+# Global Download Progress Store (SSE support) — Redis-backed
 # ============================================
 
+# Module-level Redis connection pool.  Initialised lazily the first time any
+# DownloadProgressStore method is called, or eagerly via `init_redis()`.
+_redis_client: _redis.Redis | None = None
 
-class DownloadResult:
-    """Class to store download results without using global variables."""
-
-    def __init__(self, progress_callback=None):
-        self.audios_exito = 0
-        self.audios_error = 0
-        self.videos_exito = 0
-        self.videos_error = 0
-        self.canciones_descargadas = []
-        self.progress_callback = progress_callback
-        self.total_items = 0
-        self.completed_items = 0
-
-    def update_progress(self, status, detail=""):
-        """Updates progress using the callback if available."""
-        if self.progress_callback:
-            if self.total_items > 0:
-                base_percent = int((self.completed_items / self.total_items) * 80) + 10
-            else:
-                base_percent = 10
-            self.progress_callback(min(base_percent, 90), status, detail)
-
-    def reset(self):
-        """Resets all counters."""
-        self.audios_exito = 0
-        self.audios_error = 0
-        self.videos_exito = 0
-        self.videos_error = 0
-        self.canciones_descargadas = []
+# Default TTL for progress entries (seconds).  Entries auto-expire so that
+# stale sessions never accumulate in Redis.
+_PROGRESS_TTL: int = 3600  # 1 hour
 
 
-# ============================================
-# yt-dlp Options Helpers
-# ============================================
+def init_redis(redis_url: str | None = None) -> _redis.Redis:
+    """Initialise (or re-initialise) the module-level Redis client.
 
-
-def obtener_opciones_base_ytdlp():
+    Called once during application startup from ``app.py``.  If *redis_url* is
+    ``None``, the ``REDIS_URL`` environment variable is used (falling back to
+    ``redis://localhost:6379/0``).
     """
-    Generates base options common to all yt-dlp calls.
-    Uses web client to access all formats without restrictions.
+    global _redis_client  # noqa: PLW0603
+    url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    _redis_client = _redis.Redis.from_url(url, decode_responses=True)
+    logger.info(f"Redis client initialised ({url})")
+    return _redis_client
+
+
+def get_redis() -> _redis.Redis:
+    """Return the module-level Redis client, initialising lazily if needed."""
+    global _redis_client  # noqa: PLW0603
+    if _redis_client is None:
+        init_redis()
+    assert _redis_client is not None
+    return _redis_client
+
+
+class DownloadProgressStore:
+    """Redis-backed global store for real-time download progress per request_id.
+
+    Used by SSE endpoints in routes.py to stream live progress to the frontend.
+    Updated by yt-dlp progress hooks during downloads.
+
+    Each request_id maps to a Redis key ``progress:{request_id}`` holding a
+    JSON-serialised dict.  Keys expire after ``_PROGRESS_TTL`` seconds.
     """
-    return {
-        "quiet": True,
-        "no_warnings": True,
-        "extractor_retries": 10,
-        "fragment_retries": 10,
-        "file_access_retries": 5,
-        "retry_sleep_functions": {"http": lambda n: min(2**n, 30)},
-        "socket_timeout": 60,
-        "http_chunk_size": 10485760,
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android_music"],
+
+    _KEY_PREFIX: str = "progress:"
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _key(cls, request_id: str) -> str:
+        return f"{cls._KEY_PREFIX}{request_id}"
+
+    # ------------------------------------------------------------------
+    # Public API  (same signatures as the old in-memory implementation)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def create(cls, request_id: str, total_items: int = 1) -> None:
+        r = get_redis()
+        data = {
+            "percent": 0,
+            "status": "Preparing...",
+            "detail": "",
+            "speed": "",
+            "eta": "",
+            "current_file": "",
+            "completed_items": 0,
+            "total_items": total_items,
+            "phase": "preparing",
+            "complete": False,
+            "error": None,
+            "file_path": None,
+            "temp_dir": None,
+            # Flag that indicates a client requested cancellation (disconnect)
+            "cancel_requested": False,
+        }
+        r.set(cls._key(request_id), _json.dumps(data), ex=_PROGRESS_TTL)
+
+    @classmethod
+    def request_cancel(cls, request_id: str) -> None:
+        """Mark a running request as cancelled so worker threads can abort."""
+        r = get_redis()
+        raw = r.get(cls._key(request_id))
+        if raw is None:
+            return
+        data = _json.loads(raw)
+        data["cancel_requested"] = True
+        r.set(cls._key(request_id), _json.dumps(data), keepttl=True)
+
+    @classmethod
+    def is_cancelled(cls, request_id: str) -> bool:
+        r = get_redis()
+        raw = r.get(cls._key(request_id))
+        if raw is None:
+            return False
+        data = _json.loads(raw)
+        return bool(data.get("cancel_requested"))
+
+    @classmethod
+    def update(cls, request_id: str, **kwargs: Any) -> None:
+        r = get_redis()
+        raw = r.get(cls._key(request_id))
+        if raw is None:
+            return
+        data = _json.loads(raw)
+        data.update(kwargs)
+        r.set(cls._key(request_id), _json.dumps(data), keepttl=True)
+
+    @classmethod
+    def get(cls, request_id: str) -> dict:
+        r = get_redis()
+        raw = r.get(cls._key(request_id))
+        if raw is None:
+            return {
+                "percent": 0,
+                "status": "Unknown",
+                "detail": "",
+                "speed": "",
+                "eta": "",
+                "complete": False,
+                "error": "Session not found",
             }
-        },
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9",
-        },
-        "nocheckcertificate": True,
-        "check_formats": "selected",
-        "force_ipv4": True,
-        "continuedl": False,
-        "overwrites": True,
-        "cachedir": False,
-        "encoding": "utf-8",
+        return _json.loads(raw)
+
+    @classmethod
+    def remove(cls, request_id: str) -> None:
+        r = get_redis()
+        r.delete(cls._key(request_id))
+
+
+# ============================================
+# Download Result (thread-safe bookkeeping)
+# ============================================
+
+
+class _DownloadResult:
+    """Thread-safe accumulator for per-session download statistics."""
+
+    __slots__ = (
+        "_lock",
+        "audios_exito",
+        "audios_error",
+        "videos_exito",
+        "videos_error",
+        "canciones_descargadas",
+        "progress_callback",
+        "total_items",
+        "completed_items",
+        "request_id",
+    )
+
+    def __init__(
+        self,
+        progress_callback: Callable | None = None,
+        request_id: str | None = None,
+    ) -> None:
+        self._lock = threading.Lock()
+        self.audios_exito: int = 0
+        self.audios_error: int = 0
+        self.videos_exito: int = 0
+        self.videos_error: int = 0
+        self.canciones_descargadas: list[str] = []
+        self.progress_callback = progress_callback
+        self.total_items: int = 0
+        self.completed_items: int = 0
+        self.request_id: str | None = request_id
+
+    # -- Thread-safe mutators --
+
+    def inc_success(self, mode: str) -> None:
+        with self._lock:
+            if mode == "audio":
+                self.audios_exito += 1
+            else:
+                self.videos_exito += 1
+
+    def inc_error(self, mode: str) -> None:
+        with self._lock:
+            if mode == "audio":
+                self.audios_error += 1
+            else:
+                self.videos_error += 1
+
+    def add_file(self, path: str) -> None:
+        with self._lock:
+            self.canciones_descargadas.append(path)
+
+    def inc_completed(self) -> None:
+        with self._lock:
+            self.completed_items += 1
+
+    def get_progress_pct(self) -> int:
+        with self._lock:
+            if self.total_items <= 0:
+                return 15
+            return 15 + int((self.completed_items / self.total_items) * 70)
+
+
+# ============================================
+# OfflinerCore
+# ============================================
+
+
+class OfflinerCore:
+    """Central class encapsulating all Offliner download / search logic.
+
+    Designed as a **singleton** for long-lived API clients (Spotify, YTMusic).
+    All request-specific state (paths, cookies, results) is either passed as
+    method arguments or scoped locally — never stored on ``self``.
+    """
+
+    # --- Class-level constants ------------------------------------------------
+
+    SPONSORBLOCK_CATEGORIES: dict[str, str] = {
+        "sponsor": "Sponsors (promociones pagadas)",
+        "intro": "Intros/Animaciones de entrada",
+        "outro": "Outros/Créditos finales",
+        "selfpromo": "Auto-promoción del creador",
+        "preview": "Previews/Avances",
+        "filler": "Relleno/Contenido no musical",
+        "interaction": "Recordatorios de suscripción/interacción",
+        "music_offtopic": "Partes sin música en videos musicales",
     }
 
+    _SIDECAR_EXTENSIONS = (".jpg", ".png", ".webp", ".vtt", ".srt", ".ass")
 
-def obtener_opciones_sponsorblock(config):
-    """Generates yt-dlp options for SponsorBlock based on user config."""
-    opciones = {}
-    if config.get("SponsorBlock_enabled", False):
-        categorias_seleccionadas = config.get("SponsorBlock_categories", [])
-        if categorias_seleccionadas:
-            opciones["sponsorblock_remove"] = categorias_seleccionadas
-            opciones["sponsorblock_mark"] = []
-            opciones["sponsorblock_api"] = "https://sponsor.ajay.app"
-            logger.info(
-                f"SponsorBlock enabled. Removing: {', '.join(categorias_seleccionadas)}"
-            )
-    return opciones
-
-
-def obtener_postprocessors_sponsorblock(config):
-    """Generates postprocessors needed for SponsorBlock."""
-    postprocessors = []
-    if config.get("SponsorBlock_enabled", False):
-        categorias_seleccionadas = config.get("SponsorBlock_categories", [])
-        if categorias_seleccionadas:
-            postprocessors.append(
-                {
-                    "key": "SponsorBlock",
-                    "categories": categorias_seleccionadas,
-                    "api": "https://sponsor.ajay.app",
-                }
-            )
-            postprocessors.append(
-                {
-                    "key": "ModifyChapters",
-                    "remove_sponsor_segments": categorias_seleccionadas,
-                    "force_keyframes": False,
-                }
-            )
-    return postprocessors
-
-
-# ============================================
-# SponsorBlock API
-# ============================================
-
-
-def obtener_segmentos_sponsorblock(video_id, categories=None):
-    """
-    Gets SponsorBlock segments for a video.
-
-    Args:
-        video_id: YouTube video ID
-        categories: List of categories to filter (if None, uses all available)
-
-    Returns:
-        dict: {
-            'has_segments': bool,
-            'segments': list of segment dicts,
-            'total_duration_removed': float (in seconds),
-            'categories_found': list of category names found
-        }
-    """
-    if not categories:
-        categories = list(SPONSORBLOCK_CATEGORIES.keys())
-
-    try:
-        # SponsorBlock API endpoint
-        api_url = f"https://sponsor.ajay.app/api/skipSegments?videoID={video_id}"
-
-        response = requests.get(api_url, timeout=5)
-
-        # Si no hay segmentos, la API devuelve 404
-        if response.status_code == 404:
-            return {
-                "has_segments": False,
-                "segments": [],
-                "total_duration_removed": 0,
-                "categories_found": [],
-            }
-
-        if response.status_code != 200:
-            logger.warning(f"SponsorBlock API returned status {response.status_code}")
-            return {
-                "has_segments": False,
-                "segments": [],
-                "total_duration_removed": 0,
-                "categories_found": [],
-            }
-
-        all_segments = response.json()
-
-        # Filter by requested categories
-        filtered_segments = [
-            seg for seg in all_segments if seg.get("category") in categories
-        ]
-
-        if not filtered_segments:
-            return {
-                "has_segments": False,
-                "segments": [],
-                "total_duration_removed": 0,
-                "categories_found": [],
-            }
-
-        # Calculate total duration to be removed
-        total_removed = sum(
-            seg["segment"][1] - seg["segment"][0] for seg in filtered_segments
-        )
-
-        # Get unique categories found
-        categories_found = list(set(seg["category"] for seg in filtered_segments))
-
-        return {
-            "has_segments": True,
-            "segments": filtered_segments,
-            "total_duration_removed": total_removed,
-            "categories_found": categories_found,
-        }
-
-    except requests.RequestException as e:
-        logger.error(f"Error querying SponsorBlock API: {e}")
-        return {
-            "has_segments": False,
-            "segments": [],
-            "total_duration_removed": 0,
-            "categories_found": [],
-        }
-    except Exception as e:
-        logger.error(f"Unexpected error in SponsorBlock query: {e}")
-        return {
-            "has_segments": False,
-            "segments": [],
-            "total_duration_removed": 0,
-            "categories_found": [],
-        }
-
-
-def extraer_video_id_youtube(url):
-    """
-    Extracts YouTube video ID from a URL.
-
-    Args:
-        url: YouTube URL
-
-    Returns:
-        str: Video ID or None if not found
-    """
-    if not url:
-        return None
-
-    # Pattern for various YouTube URL formats
-    patterns = [
-        r"(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/|music\.youtube\.com\/watch\?v=)([a-zA-Z0-9_-]{11})",
+    _VIDEO_TAG_PATTERNS: list[str] = [
+        r"\(Official\s*(Music\s*)?Video\)",
+        r"\(Official\s*Audio\)",
+        r"\(Official\s*Lyric\s*Video\)",
+        r"\(Video\s*Oficial\)",
+        r"\(Audio\s*Oficial\)",
+        r"\(Visualizer\)",
+        r"\[Official\s*(Music\s*)?Video\]",
+        r"\[Official\s*Audio\]",
+        r"\(HD\)",
+        r"\(HQ\)",
+        r"\(4K\)",
+        r"\(1080p\)",
+        r"\(720p\)",
     ]
 
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1)
+    _DEFAULT_MAX_WORKERS: int = 4
 
-    # If URL is already just the ID
-    if re.match(r"^[a-zA-Z0-9_-]{11}$", url):
-        return url
+    # ------------------------------------------------------------------
+    # Initialization
+    # ------------------------------------------------------------------
 
-    return None
+    def __init__(self) -> None:
+        self._base_dir: Path = Path(__file__).resolve().parent
 
+        # One-time ffmpeg check at startup
+        self._ffmpeg_available: bool = shutil.which("ffmpeg") is not None
+        if not self._ffmpeg_available:
+            logger.warning("ffmpeg not found in PATH; post-processing will fail")
 
-# ============================================
-# Utility Functions
-# ============================================
-
-
-def crear_carpeta(carpeta):
-    """Creates a folder if it doesn't exist."""
-    if not os.path.isabs(carpeta):
-        ruta_completa = os.path.join(SCRIPT_DIR, carpeta)
-    else:
-        ruta_completa = carpeta
-    if not os.path.exists(ruta_completa):
-        os.makedirs(ruta_completa)
-    return ruta_completa
-
-
-def sanitizar_nombre_archivo(titulo):
-    """
-    Sanitizes a title for use as a Windows filename.
-    Only removes characters that are illegal in Windows.
-    Illegal characters: < > : " / \\ | ? *
-    """
-    nombre = titulo.strip()
-    caracteres_invalidos = r'[<>:"/\\|?*]'
-    nombre = re.sub(caracteres_invalidos, "", nombre)
-    nombre = re.sub(r"\.+$", "", nombre.strip())
-    nombre = re.sub(r"\s+", " ", nombre).strip()
-    if len(nombre) > 200:
-        nombre = nombre[:200].strip()
-
-    # Normalize to closest ASCII representation to avoid problems with ffmpeg on Windows
-    try:
-        nombre_ascii = (
-            unicodedata.normalize("NFKD", nombre)
-            .encode("ascii", "ignore")
-            .decode("ascii")
-        )
-        nombre_ascii = re.sub(r"\s+", " ", nombre_ascii).strip()
-        if nombre_ascii:
-            nombre = nombre_ascii
-    except Exception:
-        pass
-
-    return nombre
-
-
-def limpiar_titulo(titulo):
-    """Alias for sanitizar_nombre_archivo for compatibility."""
-    return sanitizar_nombre_archivo(titulo)
-
-
-def limpiar_nombre_archivo(nombre):
-    """Cleans a filename by removing invalid Windows characters."""
-    nombre_limpio = re.sub(r'[<>:"/\\|?*]', "", nombre)
-    nombre_limpio = re.sub(r"\.+$", "", nombre_limpio.strip())
-    return nombre_limpio
-
-
-def archivo_duplicado(directorio, tipo, nombre):
-    """Checks if a file already exists."""
-    try:
-        carpeta_tipo = tipo.capitalize()
-        directorio_completo = os.path.join(SCRIPT_DIR, directorio, carpeta_tipo)
-        if not os.path.exists(directorio_completo):
-            return False
-        archivos_en_ruta_actual = os.listdir(directorio_completo)
-        for archivo in archivos_en_ruta_actual:
-            if archivo == nombre:
-                ruta_completa = os.path.abspath(
-                    os.path.join(directorio_completo, nombre)
-                )
-                return ruta_completa
-        return False
-    except Exception as e:
-        logger.error(f"Error checking for duplicate file: {e}")
-        return False
-
-
-# ============================================
-# YouTube Music Search
-# ============================================
-
-
-def extraer_artista_principal(titulo):
-    """Extracts the main artist from a video title."""
-    if not titulo:
-        return ""
-    titulo = titulo.strip()
-    separadores = [
-        r"\s*\|\|\s*",
-        r"\s*[-–—]\s*",
-        r"\s+ft\.?\s+",
-        r"\s+feat\.?\s+",
-        r"\s+x\s+",
-        r"\s*&\s*",
-    ]
-    for sep in separadores:
-        partes = re.split(sep, titulo, maxsplit=1, flags=re.IGNORECASE)
-        if len(partes) > 1:
-            artista = partes[0].strip()
-            if len(artista) >= 2:
-                return artista.lower()
-    return titulo.lower()
-
-
-def extraer_palabras_clave(texto):
-    """Extracts important keywords from text for comparison."""
-    texto = texto.lower()
-    texto = re.sub(r"[^\w\s#áéíóúñ]", " ", texto)
-    palabras = texto.split()
-    palabras_clave = []
-    for p in palabras:
-        if len(p) >= 2 or p.startswith("#") or p.isdigit():
-            palabras_clave.append(p)
-    return set(palabras_clave)
-
-
-def calcular_similitud_mejorada(
-    titulo_original,
-    titulo_resultado,
-    artista_principal,
-    artista_resultado,
-    lista_artistas,
-):
-    """Calculates an improved similarity score between the searched title and a result."""
-    titulo_original_lower = titulo_original.lower()
-    titulo_resultado_lower = titulo_resultado.lower()
-    artista_resultado_lower = artista_resultado.lower()
-
-    # Artist verification (35%)
-    puntuacion_artista = 0.0
-    if artista_principal:
-        artista_encontrado = False
-        for artista in lista_artistas:
-            if artista_principal in artista or artista in artista_principal:
-                artista_encontrado = True
-                break
-            palabras_artista_original = set(artista_principal.split())
-            palabras_artista_resultado = set(artista.split())
-            if (
-                len(palabras_artista_original.intersection(palabras_artista_resultado))
-                >= 1
-            ):
-                if len(palabras_artista_original) <= 2:
-                    artista_encontrado = True
-                    break
-        if not artista_encontrado and artista_principal in titulo_resultado_lower:
-            artista_encontrado = True
-        puntuacion_artista = 1.0 if artista_encontrado else 0.0
-    else:
-        puntuacion_artista = 0.5
-
-    # Official artist verification (25%)
-    puntuacion_artista_oficial = 1.0
-    es_bzrp_session = "sessions" in titulo_original_lower and (
-        "bzrp" in titulo_original_lower or "bizarrap" in titulo_original_lower
-    )
-    if es_bzrp_session:
-        es_bizarrap = "bizarrap" in artista_resultado_lower or any(
-            "bizarrap" in a for a in lista_artistas
-        )
-        if not es_bizarrap:
-            puntuacion_artista_oficial = 0.0
-
-    # Number verification (20%)
-    numeros_original = set(re.findall(r"\d+", titulo_original))
-    numeros_resultado = set(re.findall(r"\d+", titulo_resultado_lower))
-    if numeros_original:
-        numeros_coinciden = bool(numeros_original.intersection(numeros_resultado))
-        puntuacion_numeros = 1.0 if numeros_coinciden else 0.0
-    else:
-        puntuacion_numeros = 1.0
-
-    # Keyword verification (10%)
-    palabras_original = extraer_palabras_clave(titulo_original)
-    palabras_resultado = extraer_palabras_clave(titulo_resultado)
-    if palabras_original:
-        coincidencias = palabras_original.intersection(palabras_resultado)
-        puntuacion_palabras = len(coincidencias) / len(palabras_original)
-    else:
-        puntuacion_palabras = 0.5
-
-    # Cover detection (penalty)
-    indicadores_cover = [
-        "cover",
-        "version",
-        "versión",
-        "banda",
-        "karaoke",
-        "instrumental",
-        "tribute",
-        "in the style of",
-        "originally performed",
-        "made famous",
-        "acústic",
-        "acoustic",
-        "remix",
-        "live",
-        "en vivo",
-        "unplugged",
-        "stripped",
-    ]
-    artistas_sospechosos = [
-        "tv musica",
-        "tv music",
-        "los coleguitas",
-        "abordaje",
-        "karolina protsenko",
-        "claudia leal",
-        "carlos ro violin",
-        "power music workout",
-        "electric lion",
-        "the pop posse",
-    ]
-    es_cover = any(ind in titulo_resultado_lower for ind in indicadores_cover)
-    es_artista_sospechoso = any(
-        a in artista_resultado_lower for a in artistas_sospechosos
-    )
-    es_cover_en_original = any(
-        ind in titulo_original_lower for ind in indicadores_cover
-    )
-    penalizacion_cover = (
-        0.6 if (es_cover and not es_cover_en_original) or es_artista_sospechoso else 0.0
-    )
-
-    # Calculate final score
-    puntuacion = (
-        puntuacion_artista * 0.35
-        + puntuacion_artista_oficial * 0.25
-        + puntuacion_numeros * 0.20
-        + puntuacion_palabras * 0.10
-        + 0.10
-    )
-    puntuacion = puntuacion * (1 - penalizacion_cover)
-    return min(puntuacion, 1.0)
-
-
-def buscar_en_youtube_music(titulo_video, artista=None):
-    """
-    Searches for a song on YouTube Music and returns the pure audio URL.
-    Only returns a result if there's sufficient match with the original title.
-    """
-    global ytmusic
-    if ytmusic is None:
-        logger.warning("YTMusic not available")
-        return None, None, None
-
-    try:
-        titulo_busqueda = titulo_video.strip()
-        patrones_video = [
-            r"\(Official\s*(Music\s*)?Video\)",
-            r"\(Official\s*Audio\)",
-            r"\(Official\s*Lyric\s*Video\)",
-            r"\(Video\s*Oficial\)",
-            r"\(Audio\s*Oficial\)",
-            r"\(Visualizer\)",
-            r"\[Official\s*(Music\s*)?Video\]",
-            r"\[Official\s*Audio\]",
-            r"\(HD\)",
-            r"\(HQ\)",
-            r"\(4K\)",
-            r"\(1080p\)",
-            r"\(720p\)",
-        ]
-        for patron in patrones_video:
-            titulo_busqueda = re.sub(patron, "", titulo_busqueda, flags=re.IGNORECASE)
-        titulo_busqueda = (
-            titulo_busqueda.replace("||", " ").replace("|", " ").replace("#", " ")
-        )
-        titulo_busqueda = re.sub(r"\s+", " ", titulo_busqueda).strip()
-
-        logger.info(f"Searching on YouTube Music: '{titulo_busqueda}'")
-        artista_principal = extraer_artista_principal(titulo_video)
-
-        resultados = ytmusic.search(titulo_busqueda, filter="songs", limit=15)
-        if not resultados:
-            resultados = ytmusic.search(titulo_busqueda, limit=15)
-        if not resultados:
-            logger.warning(f"No results found for '{titulo_busqueda}'")
-            return None, None, None
-
-        mejor_resultado = None
-        mejor_puntuacion = 0
-        umbral_minimo = 0.5
-
-        for resultado in resultados:
-            if not resultado.get("videoId"):
-                continue
-            titulo_resultado = resultado.get("title", "")
-            artistas_resultado = resultado.get("artists", [])
-            artista_resultado = (
-                artistas_resultado[0].get("name", "") if artistas_resultado else ""
-            )
-            lista_artistas = [a.get("name", "").lower() for a in artistas_resultado]
-
-            puntuacion = calcular_similitud_mejorada(
-                titulo_video,
-                titulo_resultado,
-                artista_principal,
-                artista_resultado,
-                lista_artistas,
-            )
-
-            if puntuacion > mejor_puntuacion:
-                mejor_puntuacion = puntuacion
-                mejor_resultado = resultado
-
-        if mejor_resultado and mejor_puntuacion >= umbral_minimo:
-            video_id = mejor_resultado.get("videoId")
-            titulo_cancion = mejor_resultado.get("title", titulo_busqueda)
-            artistas = mejor_resultado.get("artists", [])
-            artista_encontrado = (
-                artistas[0].get("name", "Unknown") if artistas else "Unknown"
-            )
-            url_ytmusic = f"https://music.youtube.com/watch?v={video_id}"
-            logger.info(
-                f"Match found ({mejor_puntuacion:.0%}): '{titulo_cancion}' by '{artista_encontrado}'"
-            )
-            return url_ytmusic, titulo_cancion, artista_encontrado
-        else:
-            logger.warning(
-                f"No sufficient match for '{titulo_video}' (best: {mejor_puntuacion:.0%})"
-            )
-            return None, None, None
-
-    except Exception as e:
-        logger.error(f"Error searching YouTube Music: {e}")
-        return None, None, None
-
-
-# ============================================
-# YouTube Search
-# ============================================
-
-
-def buscar_cancion_youtube(query):
-    """Searches for a video on YouTube and returns the URL."""
-    try:
-        logger.info(f"Searching YouTube: {query}")
-        ydl_opts = obtener_opciones_base_ytdlp()
-        ydl_opts.update(
-            {
-                "extract_flat": True,
-                "default_search": "ytsearch1",
-            }
+        # API clients (graceful init — never raise)
+        self.ytmusic: YTMusic | None = self._init_ytmusic()
+        self._spotify_client_id: str = os.getenv("SPOTIFY_CLIENT_ID", "")
+        self._spotify_client_secret: str = os.getenv("SPOTIFY_CLIENT_SECRET", "")
+        self._spotify_default: spotipy.Spotify | None = self._init_spotify(
+            self._spotify_client_id, self._spotify_client_secret
         )
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
-            if info and "entries" in info and info["entries"]:
-                entry = info["entries"][0]
-                if entry:
-                    video_id = entry.get("id")
-                    if video_id:
-                        link_youtube = f"https://www.youtube.com/watch?v={video_id}"
-                        logger.info(f"Video found: {link_youtube}")
-                        return link_youtube
-        logger.warning(f"No results for: {query}")
-        return ""
-    except Exception as e:
-        logger.error(f"Error searching YouTube: {e}")
-        return ""
-
-
-# ============================================
-# Metadata Functions
-# ============================================
-
-
-def obtener_nombre_artistas(track):
-    """Gets artist names as a comma-separated string."""
-    if track["artists"]:
-        artists = [artist["name"] for artist in track["artists"]]
-        return ", ".join(artists)
-    return ""
-
-
-def obtener_nombre_album(spotify_client, album_id):
-    """Gets the full album name from Spotify API."""
-    try:
-        album = spotify_client.album(album_id)
-        if "name" in album:
-            return album["name"]
-        return None
-    except Exception as e:
-        logger.error(f"Error getting album name: {e}")
-        return None
-
-
-def descargar_metadata(
-    ruta_del_archivo, nombre_archivo, nombre_artista, client_id=None, client_secret=None
-):
-    """Downloads and adds Spotify metadata to an audio/video file."""
-    logger.info("Scraping metadata from Spotify...")
-    try:
-        spotify_client_id = client_id if client_id else SPOTIFY_CLIENT_ID
-        spotify_client_secret = (
-            client_secret if client_secret else SPOTIFY_CLIENT_SECRET
-        )
-
-        global sp
-        if sp and spotify_client_id == SPOTIFY_CLIENT_ID:
-            spotify_client = sp
-        else:
-            client_credentials_manager = SpotifyClientCredentials(
-                spotify_client_id, spotify_client_secret
-            )
-            spotify_client = spotipy.Spotify(
-                client_credentials_manager=client_credentials_manager,
-                requests_timeout=10,
-            )
-
-        nombre_archivo = limpiar_titulo(nombre_archivo)
-        resultados = spotify_client.search(
-            q=f"{nombre_archivo} {nombre_artista}",
-            type="track",
-            limit=1,
-            market="ES",
-            offset=0,
-        )
-
-        if resultados["tracks"]["items"]:
-            track = resultados["tracks"]["items"][0]
-            if track["album"]["images"]:
-                url_artwork = track["album"]["images"][0]["url"]
-                nombre_artistas = obtener_nombre_artistas(track)
-                formato_archivo = os.path.splitext(ruta_del_archivo)[1].lower()
-                portada_data = requests.get(url_artwork).content
-
-                nombre_album = obtener_nombre_album(
-                    spotify_client, track["album"]["id"]
-                )
-                caracteres_especiales = ':/\\|?*"<>'
-                nombre_album_limpio = (
-                    "".join(
-                        c if c not in caracteres_especiales else " "
-                        for c in nombre_album
-                    )
-                    if nombre_album
-                    else None
-                )
-                anio_publicacion = (
-                    track["album"]["release_date"][:4]
-                    if "album" in track and "release_date" in track["album"]
-                    else None
-                )
-
-                if formato_archivo in [".mp3", ".wav", ".m4a", ".flac"]:
-                    if formato_archivo == ".mp3":
-                        try:
-                            audio = ID3(ruta_del_archivo)
-                        except ID3NoHeaderError:
-                            audio = ID3()
-                        audio.delall("APIC")
-                        audio.add(
-                            APIC(
-                                encoding=3,
-                                mime="image/jpeg",
-                                type=3,
-                                desc="Front Cover",
-                                data=portada_data,
-                            )
-                        )
-                        audio.delall("TIT2")
-                        audio.add(TIT2(encoding=3, text=nombre_archivo))
-                        audio.delall("TPE1")
-                        audio.add(TPE1(encoding=3, text=nombre_artistas))
-                        if nombre_album_limpio:
-                            audio.delall("TALB")
-                            audio.add(TALB(encoding=3, text=nombre_album_limpio))
-                        if anio_publicacion:
-                            audio.delall("TDRC")
-                            audio.delall("TYER")
-                            audio.add(TDRC(encoding=3, text=anio_publicacion))
-                        audio.save(ruta_del_archivo, v2_version=3)
-
-                    elif formato_archivo == ".wav":
-                        try:
-                            # Step 1: Use ffmpeg to write RIFF INFO metadata
-                            # (readable by Windows Media Player and Windows Explorer)
-                            temp_wav = ruta_del_archivo + ".tmp.wav"
-                            ffmpeg_cmd = [
-                                "ffmpeg",
-                                "-y",
-                                "-i",
-                                ruta_del_archivo,
-                                "-metadata",
-                                f"title={nombre_archivo}",
-                                "-metadata",
-                                f"artist={nombre_artistas}",
-                            ]
-                            if nombre_album_limpio:
-                                ffmpeg_cmd.extend(
-                                    ["-metadata", f"album={nombre_album_limpio}"]
-                                )
-                            if anio_publicacion:
-                                ffmpeg_cmd.extend(
-                                    ["-metadata", f"date={anio_publicacion}"]
-                                )
-                            ffmpeg_cmd.extend(["-c", "copy", temp_wav])
-
-                            ffmpeg_result = subprocess.run(
-                                ffmpeg_cmd,
-                                capture_output=True,
-                                timeout=60,
-                                creationflags=(
-                                    subprocess.CREATE_NO_WINDOW
-                                    if os.name == "nt"
-                                    else 0
-                                ),
-                            )
-                            if ffmpeg_result.returncode == 0 and os.path.exists(
-                                temp_wav
-                            ):
-                                os.replace(temp_wav, ruta_del_archivo)
-                                logger.info(
-                                    "RIFF INFO metadata written to WAV via ffmpeg"
-                                )
-                            else:
-                                if os.path.exists(temp_wav):
-                                    os.remove(temp_wav)
-                                logger.warning(
-                                    "ffmpeg RIFF INFO failed, falling back to ID3 only"
-                                )
-
-                            # Step 2: Add ID3 tags (album art + metadata for players that support ID3 in WAV)
-                            audio_wave = WAVE(ruta_del_archivo)
-                            if audio_wave.tags is None:
-                                audio_wave.add_tags()
-                            tags = audio_wave.tags
-                            tags.delall("APIC")
-                            tags.add(
-                                APIC(
-                                    encoding=3,
-                                    mime="image/jpeg",
-                                    type=3,
-                                    desc="Front Cover",
-                                    data=portada_data,
-                                )
-                            )
-                            tags.delall("TIT2")
-                            tags.add(TIT2(encoding=3, text=nombre_archivo))
-                            tags.delall("TPE1")
-                            tags.add(TPE1(encoding=3, text=nombre_artistas))
-                            tags.delall("TALB")
-                            if nombre_album_limpio:
-                                tags.add(TALB(encoding=3, text=nombre_album_limpio))
-                            tags.delall("TDRC")
-                            tags.delall("TYER")
-                            if anio_publicacion:
-                                tags.add(TDRC(encoding=3, text=anio_publicacion))
-                            audio_wave.save()
-                        except Exception as e:
-                            logger.error(f"Error adding metadata to WAV: {e}")
-
-                    elif formato_archivo == ".m4a":
-                        audio = MP4(ruta_del_archivo)
-                        audio["\xa9nam"] = nombre_archivo
-                        audio["\xa9ART"] = nombre_artistas
-                        audio["covr"] = [
-                            MP4Cover(
-                                data=portada_data, imageformat=MP4Cover.FORMAT_JPEG
-                            )
-                        ]
-                        if nombre_album_limpio:
-                            audio["\xa9alb"] = nombre_album_limpio
-                        if anio_publicacion:
-                            audio["\xa9day"] = anio_publicacion
-                        audio.save()
-
-                    elif formato_archivo == ".flac":
-                        audio = FLAC(ruta_del_archivo)
-                        audio["title"] = nombre_archivo
-                        audio["artist"] = nombre_artistas
-                        if nombre_album_limpio:
-                            audio["album"] = nombre_album_limpio
-                        if anio_publicacion:
-                            audio["date"] = anio_publicacion
-                        audio.clear_pictures()
-                        image = Picture()
-                        image.type = 3
-                        image.mime = "image/jpeg"
-                        image.desc = "Front Cover"
-                        image.data = portada_data
-                        audio.add_picture(image)
-                        audio.save()
-
-                elif formato_archivo in [".mp4", ".mov"]:
-                    video = MP4(ruta_del_archivo)
-                    video["\xa9nam"] = nombre_archivo
-                    video["\xa9ART"] = nombre_artistas
-                    video["covr"] = [
-                        MP4Cover(data=portada_data, imageformat=MP4Cover.FORMAT_JPEG)
-                    ]
-                    if nombre_album_limpio:
-                        video["\xa9alb"] = nombre_album_limpio
-                    if anio_publicacion:
-                        video["\xa9day"] = anio_publicacion
-                    video.save()
-
-        logger.info("Metadata added successfully.")
-    except Exception as e:
-        logger.error(f"Error downloading metadata: {e}")
-
-
-# ============================================
-# Video Conversion
-# ============================================
-
-
-def _detectar_gpu_encoder():
-    """Detects available GPU H.264 encoders. Result is cached after first call.
-
-    Returns:
-        str or None: 'nvidia', 'amd', 'intel', or None if no GPU encoder found.
-    """
-    if hasattr(_detectar_gpu_encoder, "_cache"):
-        return _detectar_gpu_encoder._cache
-
-    _detectar_gpu_encoder._cache = None
-    try:
-        result = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-encoders"],
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-        )
-        output = result.stdout
-
-        if "h264_nvenc" in output:
-            _detectar_gpu_encoder._cache = "nvidia"
-            logger.info("GPU encoder detected: NVIDIA (NVENC)")
-        elif "h264_amf" in output:
-            _detectar_gpu_encoder._cache = "amd"
-            logger.info("GPU encoder detected: AMD (AMF)")
-        elif "h264_qsv" in output:
-            _detectar_gpu_encoder._cache = "intel"
-            logger.info("GPU encoder detected: Intel (QSV)")
-        else:
-            logger.info("No GPU encoder detected, using software encoding")
-    except Exception as e:
-        logger.debug(f"GPU encoder detection failed: {e}")
-
-    return _detectar_gpu_encoder._cache
-
-
-def _obtener_config_formato_video(formato, gpu=None):
-    """Returns FFmpeg codec config for the given format, using GPU when available.
-
-    GPU acceleration is used for H.264-based formats (mp4, mkv, mov).
-    WebM always uses software VP9 encoding.
-    """
-    # GPU-accelerated H.264 configs
-    if gpu and formato in ("mp4", "mkv", "mov"):
-        if gpu == "nvidia":
-            base = {
-                "vcodec": "h264_nvenc",
-                "acodec": "aac",
-                "extra_args": [
-                    "-preset",
-                    "p4",  # Fast NVENC preset (p1=fastest, p7=best)
-                    "-rc",
-                    "vbr",  # Variable bitrate mode
-                    "-cq",
-                    "23",  # Constant quality (similar to CRF 23)
-                    "-b:v",
-                    "0",  # Let CQ control quality
-                    "-spatial-aq",
-                    "1",  # Spatial adaptive quantization
-                    "-temporal-aq",
-                    "1",  # Temporal adaptive quantization
-                ],
-            }
-        elif gpu == "amd":
-            base = {
-                "vcodec": "h264_amf",
-                "acodec": "aac",
-                "extra_args": [
-                    "-quality",
-                    "speed",
-                    "-rc",
-                    "cqp",  # Constant QP mode
-                    "-qp_i",
-                    "23",
-                    "-qp_p",
-                    "23",
-                    "-qp_b",
-                    "23",
-                ],
-            }
-        elif gpu == "intel":
-            base = {
-                "vcodec": "h264_qsv",
-                "acodec": "aac",
-                "extra_args": [
-                    "-preset",
-                    "fast",
-                    "-global_quality",
-                    "23",
-                ],
-            }
-        else:
+    @staticmethod
+    def _init_ytmusic() -> YTMusic | None:
+        try:
+            client = YTMusic()
+            logger.info("YTMusic client initialized")
+            return client
+        except Exception as e:
+            logger.warning(f"Could not initialize YTMusic: {e}")
             return None
 
-        # Format-specific flags
-        if formato in ("mp4", "mov"):
-            base["extra_args"].extend(["-movflags", "+faststart"])
-
-        return base
-
-    # Software fallback / WebM
-    configs = {
-        "mp4": {
-            "vcodec": "libx264",
-            "acodec": "aac",
-            "extra_args": [
-                "-preset",
-                "faster",
-                "-crf",
-                "23",
-                "-movflags",
-                "+faststart",
-                "-tune",
-                "film",
-            ],
-        },
-        "mkv": {
-            "vcodec": "libx264",
-            "acodec": "aac",
-            "extra_args": [
-                "-preset",
-                "faster",
-                "-crf",
-                "23",
-                "-tune",
-                "film",
-            ],
-        },
-        "webm": {
-            "vcodec": "libvpx-vp9",
-            "acodec": "libopus",
-            "extra_args": [
-                "-crf",
-                "30",
-                "-b:v",
-                "0",
-                "-row-mt",
-                "1",
-                "-deadline",
-                "good",
-                "-cpu-used",
-                "5",  # Max speed for VP9 software (0=slowest, 5=fastest)
-            ],
-        },
-        "mov": {
-            "vcodec": "libx264",
-            "acodec": "aac",
-            "extra_args": [
-                "-preset",
-                "faster",
-                "-crf",
-                "23",
-                "-movflags",
-                "+faststart",
-                "-tune",
-                "film",
-            ],
-        },
-    }
-
-    return configs.get(formato)
-
-
-def _ejecutar_ffmpeg_video(cmd, formato, use_gpu):
-    """Runs an FFmpeg video conversion command. Returns True on success.
-
-    If a GPU command fails, returns False so the caller can retry with software.
-    """
-    logger.info(f"Converting video to {formato} ({'GPU' if use_gpu else 'CPU'})...")
-    result = subprocess.run(
-        cmd, capture_output=True, encoding="utf-8", errors="replace"
-    )
-
-    if result.returncode != 0:
-        stderr = (result.stderr or "").strip()
-        if stderr:
-            # Only log meaningful lines (skip progress stats)
-            error_lines = [
-                l
-                for l in stderr.splitlines()
-                if not l.strip().startswith("frame=")
-                and "speed=" not in l
-                and "bitrate=" not in l
-            ]
-            if error_lines:
-                logger.error(f"FFmpeg conversion error: {' | '.join(error_lines[-5:])}")
-        return False
-
-    return True
-
-
-def _convertir_video_ffmpeg(archivo_origen, archivo_destino, formato):
-    """Converts a video to the specified format using FFmpeg.
-
-    Uses GPU acceleration (NVIDIA NVENC / AMD AMF / Intel QSV) when available,
-    with automatic fallback to optimized software encoding.
-    Stderr is captured to prevent harmless decoder warnings in the console.
-    """
-    try:
-        if not os.path.exists(archivo_origen):
-            logger.error(f"Source file not found: {archivo_origen}")
-            return False
-
-        archivo_origen = os.path.abspath(archivo_origen)
-        archivo_destino = os.path.abspath(archivo_destino)
-
-        # Detect GPU encoder
-        gpu = _detectar_gpu_encoder()
-        config = _obtener_config_formato_video(formato.lower(), gpu)
-
-        if not config:
-            logger.error(f"Unsupported video format: {formato}")
-            return False
-
-        def _build_cmd(cfg, is_gpu=False):
-            cmd = [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-i",
-                archivo_origen,
-                # Sync fixes
-                "-fflags",
-                "+genpts",
-                "-af",
-                "aresample=async=1",
-                "-fps_mode",
-                "cfr",
-            ]
-            # GPU encoders (NVENC/AMF/QSV) require yuv420p pixel format
-            if is_gpu:
-                cmd.extend(["-pix_fmt", "yuv420p"])
-            # Codecs
-            cmd.extend(
-                [
-                    "-c:v",
-                    cfg["vcodec"],
-                    "-c:a",
-                    cfg["acodec"],
-                    "-b:a",
-                    "192k",
-                    "-ar",
-                    "48000",
-                ]
+    @staticmethod
+    def _init_spotify(client_id: str, client_secret: str) -> spotipy.Spotify | None:
+        if not (client_id and client_secret):
+            logger.warning("Spotify credentials not configured")
+            return None
+        try:
+            ccm = SpotifyClientCredentials(client_id, client_secret)
+            client = spotipy.Spotify(
+                client_credentials_manager=ccm, requests_timeout=10
             )
-            cmd.extend(cfg["extra_args"])
-            cmd.extend(
-                [
-                    "-max_interleave_delta",
-                    "0",
-                    "-max_muxing_queue_size",
-                    "1024",
-                    "-threads",
-                    "0",
-                    "-y",
-                    archivo_destino,
-                ]
-            )
-            return cmd
+            logger.info("Spotify client initialized successfully")
+            return client
+        except Exception as e:
+            logger.warning(f"Could not initialize Spotify client: {e}")
+            return None
 
-        # Try GPU encoding first (if available and applicable)
-        use_gpu = gpu is not None and formato.lower() in ("mp4", "mkv", "mov")
-        cmd = _build_cmd(config, is_gpu=use_gpu)
+    # ------------------------------------------------------------------
+    # Fuzzy matching  (rapidfuzz preferred, SequenceMatcher fallback)
+    # ------------------------------------------------------------------
 
-        if _ejecutar_ffmpeg_video(cmd, formato, use_gpu):
-            logger.info(
-                f"Video converted successfully to {formato}"
-                f" ({'GPU' if use_gpu else 'CPU'})"
-            )
-            return True
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        """Lower-case, strip parenthetical/bracket tags, collapse whitespace."""
+        text = text.lower()
+        text = re.sub(r"\([^)]*\)|\[[^\]]*\]", "", text)
+        text = re.sub(r"[^\w\s]", " ", text)
+        return re.sub(r"\s+", " ", text).strip()
 
-        # If GPU failed, retry with software encoding
-        if use_gpu:
-            logger.warning(
-                f"GPU encoding failed for {formato}, retrying with software encoder..."
-            )
-            sw_config = _obtener_config_formato_video(formato.lower(), gpu=None)
-            if sw_config:
-                cmd = _build_cmd(sw_config, is_gpu=False)
-                if _ejecutar_ffmpeg_video(cmd, formato, False):
-                    logger.info(
-                        f"Video converted successfully to {formato} (CPU fallback)"
-                    )
-                    return True
+    def _is_match(self, query: str, candidate: str, threshold: float = 0.6) -> bool:
+        """Return *True* when *query* and *candidate* are sufficiently similar."""
+        return self._match_score(query, candidate) >= threshold
 
-        logger.error(f"FFmpeg conversion failed for {formato}")
-        return False
+    def _match_score(self, query: str, candidate: str) -> float:
+        """Return a similarity ratio in [0, 1]."""
+        q = self._normalize_text(query)
+        c = self._normalize_text(candidate)
+        if _RAPIDFUZZ_AVAILABLE:
+            return _rfuzz.ratio(q, c) / 100.0
+        return _SequenceMatcher(None, q, c).ratio()
 
-    except FileNotFoundError:
-        logger.error("FFmpeg is not installed or not in PATH")
-        return False
-    except Exception as e:
-        logger.error(f"Error converting video: {e}")
-        return False
+    # ------------------------------------------------------------------
+    # Per-session cookie management
+    # ------------------------------------------------------------------
 
+    @staticmethod
+    def _setup_cookies(config: dict, session_dir: Path) -> Path | None:
+        """Provision a session-local cookie file from *config* and return its
+        path, or ``None`` when no cookies are configured.
 
-def _convertir_audio_ffmpeg(
-    archivo_origen, archivo_destino, formato, calidad_kbps="128"
-):
-    """Converts a given audio file to the desired format using ffmpeg.
+        Supported config keys
+        ---------------------
+        * ``cookies_content``  – raw Netscape cookie-jar text.
+        * ``cookies_filepath`` – path to an existing cookie file on disk.
 
-    Optimized for speed and quality with format-specific settings.
-    Returns True on success, False otherwise.
-    """
-    try:
-        if not os.path.exists(archivo_origen):
-            logger.error(f"Source audio not found: {archivo_origen}")
-            return False
+        The resulting file is written *inside* ``session_dir`` so it is
+        automatically destroyed during session cleanup.  Cookie content is
+        **never logged** for security.
+        """
+        cookies_content = config.get("cookies_content")
+        cookies_filepath = config.get("cookies_filepath")
 
-        ffmpeg_path = shutil.which("ffmpeg")
-        if not ffmpeg_path:
-            logger.error("FFmpeg not found in PATH")
-            return False
-
-        archivo_origen = os.path.abspath(archivo_origen)
-        archivo_destino = os.path.abspath(archivo_destino)
-
-        formato = formato.lower()
-
-        # Optimized codec configurations per format
-        formato_config = {
-            "mp3": {
-                "codec": ["-c:a", "libmp3lame"],
-                "extra": [
-                    "-compression_level",
-                    "2",  # Faster encoding (0-9, 2 is fast)
-                    "-q:a",
-                    "2",  # VBR quality (0-9, 2 is high quality)
-                ],
-                "use_bitrate": False,  # Use VBR instead
-            },
-            "m4a": {
-                "codec": ["-c:a", "aac"],
-                "extra": [
-                    "-movflags",
-                    "+faststart",
-                    "-ar",
-                    "48000",  # Sample rate
-                ],
-                "use_bitrate": True,
-            },
-            "aac": {
-                "codec": ["-c:a", "aac"],
-                "extra": ["-ar", "48000"],
-                "use_bitrate": True,
-            },
-            "opus": {
-                "codec": ["-c:a", "libopus"],
-                "extra": [
-                    "-compression_level",
-                    "5",  # Balance speed/quality (0-10)
-                    "-vbr",
-                    "on",  # Variable bitrate
-                ],
-                "use_bitrate": True,
-            },
-            "flac": {
-                "codec": ["-c:a", "flac"],
-                "extra": [
-                    "-compression_level",
-                    "5",  # Fast compression (0-12, 5 is fast)
-                ],
-                "use_bitrate": False,  # Lossless, no bitrate
-            },
-            "wav": {
-                "codec": ["-c:a", "pcm_s16le"],
-                "extra": ["-ar", "48000"],
-                "use_bitrate": False,  # PCM, no bitrate
-            },
-        }
-
-        config = formato_config.get(
-            formato,
-            {
-                "codec": ["-c:a", "copy"],
-                "extra": [],
-                "use_bitrate": False,
-            },
-        )
-
-        # Build command with optimizations
-        cmd = [
-            ffmpeg_path,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-i",
-            archivo_origen,
-            "-vn",  # No video
-            "-sn",  # No subtitles
-            "-map",
-            "0:a:0",  # Select first audio stream only
-        ]
-
-        # Add codec
-        cmd.extend(config["codec"])
-
-        # Add bitrate if needed
-        if config["use_bitrate"]:
-            cmd.extend(["-b:a", f"{calidad_kbps}k"])
-
-        # Add format-specific extra args
-        cmd.extend(config["extra"])
-
-        # Add output file
-        cmd.append(archivo_destino)
-
-        logger.info(f"Converting audio to {formato} (optimized)...")
-
-        result = subprocess.run(
-            cmd, capture_output=True, encoding="utf-8", errors="replace"
-        )
-        if result.returncode != 0:
-            logger.error(f"FFmpeg audio conversion failed: {result.stderr}")
-            return False
-
-        logger.info(f"Audio converted successfully to {formato}")
-        return True
-
-    except FileNotFoundError:
-        logger.error("FFmpeg is not installed or not in PATH")
-        return False
-    except Exception as e:
-        logger.error(f"Error converting audio: {e}")
-        return False
-
-
-# ============================================
-# Core Download Functions
-# ============================================
-
-
-def _descargar_audio_interno(config, url, result, base_folder=None):
-    """Internal audio download function using result object."""
-    try:
-        if "spotify.com" in url and "/track/" in url:
-            logger.info(f"Detected Spotify URL, converting to YouTube: {url}")
-            url_youtube = obtener_cancion_Spotify(config, url)
-            if not url_youtube:
-                logger.error(f"Could not convert Spotify URL: {url}")
-                result.audios_error += 1
-                return
-            url = url_youtube
-
-        calidad_map = {
-            "min": ("worstaudio[abr<=96]/worstaudio/worst", "64"),
-            "avg": ("bestaudio[abr<=160]/bestaudio[abr<=192]/bestaudio/best", "128"),
-            "max": ("bestaudio/best", "320"),
-        }
-        calidad_format, calidad_audio = calidad_map.get(
-            config.get("Calidad_audio_video", "avg"),
-            ("bestaudio[abr<=160]/bestaudio/best", "128"),
-        )
-        formato_audio = config.get("Formato_audio", "mp3")
-
-        info_opts = obtener_opciones_base_ytdlp()
-        with yt_dlp.YoutubeDL(info_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            titulo_original = info.get("title", "Unknown Title")
-            uploader_original = info.get("uploader", "Unknown Uploader")
-            titulo_limpio = limpiar_titulo(titulo_original)
-
-            url_descarga = url
-            artista_final = uploader_original
-
-            if config.get("Preferir_YouTube_Music", False):
-                logger.info(
-                    f"Searching for pure audio on YouTube Music: '{titulo_original}'"
-                )
-                url_ytmusic, titulo_ytmusic, artista_ytmusic = buscar_en_youtube_music(
-                    titulo_original, uploader_original
-                )
-                if url_ytmusic:
-                    url_descarga = url_ytmusic
-                    artista_final = artista_ytmusic
-
-            if base_folder:
-                carpeta_audio = base_folder
-            else:
-                carpeta_audio = os.path.join(SCRIPT_DIR, "Downloads", "Audio")
-            crear_carpeta(carpeta_audio)
-
-            # Ensure filename is ASCII-safe to avoid ffmpeg/yt-dlp encoding issues
+        if cookies_content:
+            cookie_path = session_dir / "cookies.txt"
             try:
-                titulo_ascii = (
-                    unicodedata.normalize("NFKD", titulo_limpio)
-                    .encode("ascii", "ignore")
-                    .decode("ascii")
-                )
-            except Exception:
-                titulo_ascii = titulo_limpio
+                cookie_path.write_text(cookies_content, encoding="utf-8")
+                logger.info("Per-session cookie file created (from content)")
+                return cookie_path
+            except Exception as e:
+                logger.error(f"Failed to write cookie file: {e}")
+                return None
 
-            nombre_archivo = f"{titulo_ascii or titulo_limpio}"
-            archivo_audio = os.path.join(carpeta_audio, nombre_archivo)
-            archivo_audio = os.path.normpath(archivo_audio)
-
-            es_archivo_duplicado = False
-            if not base_folder:
-                es_archivo_duplicado = archivo_duplicado(
-                    "Downloads", "Audio", f"{nombre_archivo}.{formato_audio}"
-                )
-
-            if not es_archivo_duplicado:
-                logger.info(f"Downloading audio: '{titulo_original}'")
-                postprocessors = []
-                postprocessors.extend(obtener_postprocessors_sponsorblock(config))
-                postprocessors.append(
-                    {
-                        "key": "FFmpegExtractAudio",
-                        "preferredcodec": formato_audio,
-                        "preferredquality": calidad_audio,
-                    }
-                )
-
-                ydl_opts = obtener_opciones_base_ytdlp()
-                # Use explicit extension placeholder to make output deterministic
-                ydl_opts.update(
-                    {
-                        "format": calidad_format,
-                        "postprocessors": postprocessors,
-                        "outtmpl": archivo_audio + ".%(ext)s",
-                    }
-                )
-                ydl_opts.update(obtener_opciones_sponsorblock(config))
-
+        if cookies_filepath:
+            src = Path(cookies_filepath)
+            if src.is_file():
+                cookie_path = session_dir / "cookies.txt"
                 try:
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        ydl.download([url_descarga])
-
-                    # Path of final audio produced by FFmpegExtractAudio
-                    archivo_audio_con_extension = f"{archivo_audio}.{formato_audio}"
-                    if config.get("Scrappear_metadata", False) and os.path.exists(
-                        archivo_audio_con_extension
-                    ):
-                        descargar_metadata(
-                            archivo_audio_con_extension, titulo_limpio, artista_final
-                        )
-
-                    result.audios_exito += 1
-                    result.canciones_descargadas.append(archivo_audio_con_extension)
-                    logger.info(f"Audio downloaded: '{titulo_original}'")
-
+                    shutil.copy2(str(src), str(cookie_path))
+                    logger.info("Per-session cookie file created (from filepath)")
+                    return cookie_path
                 except Exception as e:
-                    logger.error(f"Primary yt-dlp postprocessing failed: {e}")
-                    # Fallback: download original media without extraction, then convert manually
-                    try:
-                        ydl_opts_fallback = obtener_opciones_base_ytdlp()
-                        ydl_opts_fallback.update(
-                            {
-                                "format": calidad_format,
-                                "outtmpl": archivo_audio + ".%(ext)s",
-                            }
-                        )
-                        ydl_opts_fallback.update(obtener_opciones_sponsorblock(config))
-
-                        with yt_dlp.YoutubeDL(ydl_opts_fallback) as ydl:
-                            ydl.download([url_descarga])
-
-                        # Find the downloaded file (original extension)
-                        posibles = glob.glob(archivo_audio + ".*")
-                        posibles = [p for p in posibles if not p.endswith(".part")]
-                        if not posibles:
-                            raise Exception(
-                                "Downloaded file not found for fallback conversion"
-                            )
-
-                        archivo_descargado = posibles[0]
-                        archivo_audio_con_extension = f"{archivo_audio}.{formato_audio}"
-
-                        converso_ok = _convertir_audio_ffmpeg(
-                            archivo_descargado,
-                            archivo_audio_con_extension,
-                            formato_audio,
-                            calidad_audio,
-                        )
-
-                        # Clean up original downloaded file if conversion succeeded
-                        if converso_ok:
-                            try:
-                                if os.path.exists(archivo_descargado) and (
-                                    archivo_descargado != archivo_audio_con_extension
-                                ):
-                                    os.remove(archivo_descargado)
-                            except Exception:
-                                pass
-
-                            if config.get("Scrappear_metadata", False):
-                                descargar_metadata(
-                                    archivo_audio_con_extension,
-                                    titulo_limpio,
-                                    artista_final,
-                                )
-
-                            result.audios_exito += 1
-                            result.canciones_descargadas.append(
-                                archivo_audio_con_extension
-                            )
-                            logger.info(
-                                f"Audio downloaded via fallback: '{titulo_original}'"
-                            )
-                        else:
-                            logger.error("Fallback conversion failed")
-                            result.audios_error += 1
-
-                    except Exception as e2:
-                        logger.error(f"Fallback download/convert failed: {e2}")
-                        result.audios_error += 1
+                    logger.error(f"Failed to copy cookie file: {e}")
+                    return None
             else:
-                logger.info(f"Duplicate audio: '{titulo_original}'")
-                result.canciones_descargadas.append(es_archivo_duplicado)
-                result.audios_exito += 1
+                logger.warning("Cookie filepath provided but file not found")
+                return None
 
-    except Exception as e:
-        logger.error(f"Error downloading audio: {e}")
-        result.audios_error += 1
-
-
-def _descargar_video_interno(config, url, result, base_folder=None):
-    """Internal video download function using result object."""
-    try:
-        if "spotify.com" in url and "/track/" in url:
-            logger.info(f"Detected Spotify URL, converting to YouTube: {url}")
-            url_youtube = obtener_cancion_Spotify(config, url)
-            if not url_youtube:
-                logger.error(f"Could not convert Spotify URL: {url}")
-                result.videos_error += 1
-                return
-            url = url_youtube
-
-        calidad_map = {
-            "min": "worstvideo+worstaudio/worst",
-            "avg": "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
-            "max": "bestvideo+bestaudio/best",
-        }
-        calidad_video = calidad_map.get(
-            config.get("Calidad_audio_video", "avg"), calidad_map["avg"]
-        )
-        formato_video = config.get("Formato_video", "mp4")
-
-        info_opts = obtener_opciones_base_ytdlp()
-        with yt_dlp.YoutubeDL(info_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            titulo_original = info.get("title", "Unknown Title")
-            uploader = info.get("uploader", "Unknown Uploader")
-            titulo_limpio = limpiar_titulo(titulo_original)
-
-            if base_folder:
-                carpeta_video = base_folder
-            else:
-                carpeta_video = os.path.join(SCRIPT_DIR, "Downloads", "Video")
-            crear_carpeta(carpeta_video)
-
-            archivo_video = os.path.join(carpeta_video, titulo_limpio)
-            archivo_video = os.path.normpath(archivo_video)
-
-            es_archivo_duplicado = False
-            if not base_folder:
-                es_archivo_duplicado = archivo_duplicado(
-                    "Downloads", "Video", f"{titulo_limpio}.{formato_video}"
-                )
-
-            if not es_archivo_duplicado:
-                logger.info(f"Downloading video: '{titulo_original}'")
-                archivo_temp = archivo_video + "_temp"
-                postprocessors = obtener_postprocessors_sponsorblock(config)
-
-                # Clean up any temporary files
-                rutas_limpieza = [
-                    archivo_temp,
-                    f"{archivo_temp}.part",
-                    f"{archivo_temp}.ytdl",
-                    f"{archivo_temp}.mkv",
-                    f"{archivo_temp}.mp4",
-                    f"{archivo_temp}.webm",
-                ]
-                for ruta in rutas_limpieza:
-                    if os.path.exists(ruta):
-                        try:
-                            os.remove(ruta)
-                        except Exception:
-                            pass
-
-                ydl_opts = obtener_opciones_base_ytdlp()
-                ydl_opts.update(
-                    {
-                        "format": calidad_video,
-                        "merge_output_format": "mkv",
-                        "outtmpl": archivo_temp,
-                        "quiet": True,
-                        "no_warnings": True,
-                    }
-                )
-                if postprocessors:
-                    ydl_opts["postprocessors"] = postprocessors
-                ydl_opts.update(obtener_opciones_sponsorblock(config))
-
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([url])
-
-                archivo_final = f"{archivo_video}.{formato_video}"
-                archivo_temp_mkv = f"{archivo_temp}.mkv"
-                if not os.path.exists(archivo_temp_mkv):
-                    if os.path.exists(archivo_temp):
-                        archivo_temp_mkv = archivo_temp
-                    else:
-                        logger.error("Temporary file not found after download")
-                        result.videos_error += 1
-                        return
-
-                conversion_exitosa = _convertir_video_ffmpeg(
-                    archivo_temp_mkv, archivo_final, formato_video
-                )
-
-                if os.path.exists(archivo_temp_mkv):
-                    os.remove(archivo_temp_mkv)
-                if os.path.exists(archivo_temp) and archivo_temp != archivo_temp_mkv:
-                    os.remove(archivo_temp)
-
-                if not conversion_exitosa:
-                    logger.error(f"Error converting video to {formato_video}")
-                    result.videos_error += 1
-                    return
-
-                if config.get("Scrappear_metadata", False):
-                    descargar_metadata(archivo_final, titulo_limpio, uploader)
-
-                result.videos_exito += 1
-                result.canciones_descargadas.append(archivo_final)
-                logger.info(f"Video downloaded: '{titulo_original}'")
-            else:
-                logger.info(f"Duplicate video: '{titulo_original}'")
-                result.canciones_descargadas.append(es_archivo_duplicado)
-                result.videos_exito += 1
-
-    except Exception as e:
-        logger.error(f"Error downloading video: {e}")
-        result.videos_error += 1
-
-
-# ============================================
-# Compression
-# ============================================
-
-
-def comprimir_y_mover_archivos(
-    nombre_archivo_final, canciones_descargadas, output_folder=None
-):
-    """Compresses downloaded files into a ZIP archive."""
-    try:
-        if output_folder:
-            carpeta_zip = output_folder
-        else:
-            carpeta_zip = os.path.join(SCRIPT_DIR, "Downloads", "Zip")
-        os.makedirs(carpeta_zip, exist_ok=True)
-
-        nombre_archivo_final = limpiar_nombre_archivo(nombre_archivo_final)
-        if nombre_archivo_final.lower().endswith(".zip"):
-            nombre_archivo_final = nombre_archivo_final[:-4]
-
-        nombre_zip = os.path.join(carpeta_zip, f"{nombre_archivo_final}.zip")
-
-        with zipfile.ZipFile(nombre_zip, "w") as zipf:
-            for archivo in canciones_descargadas:
-                archivo_limpio = limpiar_nombre_archivo(os.path.basename(archivo))
-                zipf.write(archivo, archivo_limpio)
-
-        for archivo in canciones_descargadas:
-            os.remove(archivo)
-
-        ruta_absoluta = os.path.abspath(nombre_zip)
-        logger.info(f"Files compressed to '{os.path.basename(nombre_zip)}'")
-        return ruta_absoluta
-    except Exception as e:
-        logger.error(f"Error compressing files: {e}")
         return None
 
+    # ------------------------------------------------------------------
+    # Path / filename utilities  (pathlib-based)
+    # ------------------------------------------------------------------
 
-# ============================================
-# Spotify Functions
-# ============================================
+    def _ensure_dir(self, path: Path | str) -> Path:
+        """Create *path* (and parents) if it doesn't exist; return it."""
+        p = Path(path) if not isinstance(path, Path) else path
+        if not p.is_absolute():
+            p = self._base_dir / p
+        p.mkdir(parents=True, exist_ok=True)
+        return p
 
+    @staticmethod
+    def _sanitize_filename(title: str) -> str:
+        """Remove illegal Windows characters and normalize to ASCII."""
+        name = title.strip()
+        name = re.sub(r'[<>:"/\\|?*]', "", name)
+        name = re.sub(r"\.+$", "", name.strip())
+        name = re.sub(r"\s+", " ", name).strip()
+        if len(name) > 200:
+            name = name[:200].strip()
+        try:
+            ascii_name = (
+                unicodedata.normalize("NFKD", name)
+                .encode("ascii", "ignore")
+                .decode("ascii")
+            )
+            ascii_name = re.sub(r"\s+", " ", ascii_name).strip()
+            if ascii_name:
+                name = ascii_name
+        except Exception:
+            pass
+        return name
 
-def obtener_cancion_Spotify(config, link_spotify):
-    """Gets the YouTube link for a Spotify track."""
-    global sp
-    try:
-        spotify_client = sp
-        if not spotify_client or (config.get("Client_ID") != SPOTIFY_CLIENT_ID):
+    # ------------------------------------------------------------------
+    # yt-dlp option builders
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _base_ytdlp_opts(cookie_file: Path | None = None) -> dict[str, Any]:
+        """Base options shared by every yt-dlp invocation.
+
+        When *cookie_file* is provided, ``cookiefile`` is added to the dict
+        so yt-dlp authenticates with those cookies.
+        """
+        opts: dict[str, Any] = {
+            "quiet": True,
+            "no_warnings": True,
+            "extractor_retries": 10,
+            "fragment_retries": 10,
+            "file_access_retries": 5,
+            "retry_sleep_functions": {"http": lambda n: min(2**n, 30)},
+            "socket_timeout": 60,
+            "http_chunk_size": 10485760,
+            # Use the web client when user cookies are present so yt-dlp sends
+            # them to the same surface that issued the cookies. Android client
+            # plus web cookies can trigger 400 responses from YouTube.
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["web"] if cookie_file else ["android_music"]
+                },
+            },
+            "http_headers": {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+            "nocheckcertificate": True,
+            "check_formats": "selected",
+            "force_ipv4": True,
+            "continuedl": False,
+            "overwrites": True,
+            "cachedir": False,
+            "encoding": "utf-8",
+        }
+        if cookie_file:
+            opts["cookiefile"] = str(cookie_file)
+        return opts
+
+    def _sponsorblock_postprocessors(self, config: dict) -> list[dict]:
+        """Build SponsorBlock postprocessor chain from user config."""
+        if not config.get("SponsorBlock_enabled"):
+            return []
+        categories = config.get("SponsorBlock_categories", [])
+        if not categories:
+            return []
+
+        # SponsorBlockPP expects only `categories` and optional `api`.
+        # The previous code passed an `action` argument (e.g. 'remove'/'chapter')
+        # which is not accepted and caused failures. We instead always request
+        # SponsorBlock chapters for the relevant categories and then use
+        # `ModifyChapters` to remove the selected categories when needed.
+        all_cats = list(self.SPONSORBLOCK_CATEGORIES.keys())
+
+        pp: list[dict] = [
+            {
+                "key": "SponsorBlock",
+                "api": "https://sponsor.ajay.app",
+                "categories": all_cats,
+            },
+            {
+                "key": "ModifyChapters",
+                "remove_sponsor_segments": categories,
+                "force_keyframes": False,
+            },
+        ]
+        logger.info(f"SponsorBlock enabled. Removing: {', '.join(categories)}")
+        return pp
+
+    # ------------------------------------------------------------------
+    # URL detection  (static — no instance state needed)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def detect_url_source(url: str) -> str | None:
+        """Return ``'spotify'``, ``'youtube_music'``, ``'youtube'``, or *None*."""
+        if not url:
+            return None
+        u = url.lower()
+        if "spotify.com" in u:
+            return "spotify"
+        if "music.youtube.com" in u:
+            return "youtube_music"
+        if "youtube.com" in u or "youtu.be" in u:
+            return "youtube"
+        return None
+
+    @staticmethod
+    def is_playlist_url(url: str) -> bool:
+        """Detect YouTube / YouTube Music / Spotify playlist or album URLs."""
+        if not url:
+            return False
+        u = url.lower()
+        patterns = [
+            "youtube.com/playlist?list=",
+            "youtube.com/watch?v=.*&list=",
+            "youtube.com/watch?.*list=",
+            "music.youtube.com/playlist?list=",
+            "music.youtube.com/watch?v=.*&list=",
+            "youtu.be/.*[?&]list=",
+        ]
+        for p in patterns:
+            if p.replace(".*", "") in u or (
+                ".*" in p and all(part in u for part in p.split(".*"))
+            ):
+                return True
+        if "spotify.com" in u and ("/playlist/" in u or "/album/" in u):
+            return True
+        return False
+
+    @staticmethod
+    def extract_youtube_video_id(url: str) -> str | None:
+        """Extract the 11-character YouTube video ID from *url*."""
+        if not url:
+            return None
+        m = re.search(
+            r"(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/"
+            r"|youtube\.com/v/|music\.youtube\.com/watch\?v=)"
+            r"([a-zA-Z0-9_-]{11})",
+            url,
+        )
+        if m:
+            return m.group(1)
+        if re.match(r"^[a-zA-Z0-9_-]{11}$", url):
+            return url
+        return None
+
+    # ------------------------------------------------------------------
+    # SponsorBlock API
+    # ------------------------------------------------------------------
+
+    def get_sponsorblock_segments(
+        self, video_id: str, categories: list[str] | None = None
+    ) -> dict:
+        """Query the SponsorBlock API for skip-segments."""
+        empty: dict = {
+            "has_segments": False,
+            "segments": [],
+            "total_duration_removed": 0,
+            "categories_found": [],
+        }
+        cats = categories or list(self.SPONSORBLOCK_CATEGORIES.keys())
+        try:
+            resp = requests.get(
+                f"https://sponsor.ajay.app/api/skipSegments?videoID={video_id}",
+                timeout=5,
+            )
+            if resp.status_code == 404:
+                return empty
+            if resp.status_code != 200:
+                logger.warning(f"SponsorBlock API returned status {resp.status_code}")
+                return empty
+
+            filtered = [s for s in resp.json() if s.get("category") in cats]
+            if not filtered:
+                return empty
+
+            total = sum(s["segment"][1] - s["segment"][0] for s in filtered)
+            return {
+                "has_segments": True,
+                "segments": filtered,
+                "total_duration_removed": total,
+                "categories_found": list({s["category"] for s in filtered}),
+            }
+        except requests.RequestException as e:
+            logger.error(f"SponsorBlock request error: {e}")
+            return empty
+        except Exception as e:
+            logger.error(f"SponsorBlock unexpected error: {e}")
+            return empty
+
+    # ------------------------------------------------------------------
+    # Spotify helpers
+    # ------------------------------------------------------------------
+
+    def _get_spotify_client(self, config: dict) -> spotipy.Spotify | None:
+        """Return a Spotify client — custom credentials override the default."""
+        custom_id = config.get("Client_ID", "")
+        custom_secret = config.get("Secret_ID", "")
+        if custom_id and custom_id != self._spotify_client_id:
             try:
-                client_credentials_manager = SpotifyClientCredentials(
-                    config["Client_ID"], config["Secret_ID"]
-                )
-                spotify_client = spotipy.Spotify(
-                    client_credentials_manager=client_credentials_manager,
-                    requests_timeout=10,
+                ccm = SpotifyClientCredentials(custom_id, custom_secret)
+                return spotipy.Spotify(
+                    client_credentials_manager=ccm, requests_timeout=10
                 )
             except Exception as e:
-                logger.error(f"Error creating Spotify client: {e}")
-                if not sp:
-                    return ""
-                spotify_client = sp
+                logger.error(f"Custom Spotify client failed: {e}")
+        return self._spotify_default
 
-        if "spotify.com" not in link_spotify or "/track/" not in link_spotify:
-            logger.warning(f"Invalid Spotify URL: {link_spotify}")
+    def _resolve_spotify_track(self, config: dict, url: str) -> str:
+        """Convert a Spotify track URL into a YouTube URL via search."""
+        try:
+            client = self._get_spotify_client(config)
+            if not client:
+                logger.error("No Spotify client available")
+                return ""
+            if "spotify.com" not in url or "/track/" not in url:
+                logger.warning(f"Invalid Spotify URL: {url}")
+                return ""
+            track_id = url.split("/track/")[1].split("?")[0].split("/")[0]
+            logger.info(f"Extracting Spotify track info: {track_id}")
+            info = client.track(track_id)
+            query = f"{info['name']} {info['artists'][0]['name']}"
+            logger.info(f"Searching YouTube for: {query}")
+            return self.search_youtube(query)
+        except Exception as e:
+            logger.error(f"Error resolving Spotify track: {e}")
             return ""
+
+    # ------------------------------------------------------------------
+    # Search  (with TTL caching)
+    # ------------------------------------------------------------------
+
+    def search_youtube(self, query: str) -> str:
+        """Return the URL of the first YouTube result for *query*, or ``""``.
+
+        Results are cached for 10 minutes to save API quota.
+        """
+        cached = _yt_search_cache.get(query)
+        if cached is not _CACHE_MISS:
+            logger.info(f"YouTube search cache hit: '{query}'")
+            return cached
+
+        result = self._search_youtube_impl(query)
+        _yt_search_cache.put(query, result)
+        return result
+
+    def _search_youtube_impl(self, query: str) -> str:
+        """Actual YouTube search via yt-dlp (uncached)."""
+        try:
+            logger.info(f"Searching YouTube: {query}")
+            opts = self._base_ytdlp_opts()
+            opts.update({"extract_flat": True, "default_search": "ytsearch1"})
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+                if info and info.get("entries"):
+                    entry = info["entries"][0]
+                    vid = (entry.get("id") or "") if entry else ""
+                    if vid:
+                        link = f"https://www.youtube.com/watch?v={vid}"
+                        logger.info(f"Video found: {link}")
+                        return link
+            logger.warning(f"No results for: {query}")
+            return ""
+        except Exception as e:
+            logger.error(f"Error searching YouTube: {e}")
+            return ""
+
+    def search_youtube_music(
+        self, title: str, artist: str | None = None
+    ) -> tuple[str | None, str | None, str | None]:
+        """Search YouTube Music and return ``(url, title, artist)`` or three *None*s.
+
+        Results are cached for 10 minutes.
+        """
+        cache_key = (title.strip().lower(), (artist or "").strip().lower())
+        cached = _ytm_search_cache.get(cache_key)
+        if cached is not _CACHE_MISS:
+            logger.info(f"YouTube Music cache hit: '{title}'")
+            return cached
+
+        result = self._search_youtube_music_impl(title, artist)
+        _ytm_search_cache.put(cache_key, result)
+        return result
+
+    def _search_youtube_music_impl(
+        self, title: str, artist: str | None = None
+    ) -> tuple[str | None, str | None, str | None]:
+        """Actual YouTube Music search (uncached)."""
+        if not self.ytmusic:
+            logger.warning("YTMusic not available")
+            return None, None, None
 
         try:
-            track_id = link_spotify.split("/track/")[1].split("?")[0].split("/")[0]
-            logger.info(f"Extracting Spotify track info: {track_id}")
-            track_info = spotify_client.track(track_id)
-            nombre_cancion = track_info["name"]
-            nombre_artista = track_info["artists"][0]["name"]
-            query = f"{nombre_cancion} {nombre_artista}"
-            logger.info(f"Searching YouTube for: {query}")
-            link_youtube = buscar_cancion_youtube(query)
-            return link_youtube if link_youtube else ""
-        except IndexError as e:
-            logger.error(f"Error parsing Spotify URL: {e}")
-            return ""
+            search_q = title.strip()
+            for pat in self._VIDEO_TAG_PATTERNS:
+                search_q = re.sub(pat, "", search_q, flags=re.IGNORECASE)
+            search_q = search_q.replace("||", " ").replace("|", " ").replace("#", " ")
+            search_q = re.sub(r"\s+", " ", search_q).strip()
 
-    except Exception as e:
-        logger.error(f"Error getting Spotify track: {e}")
-        return ""
+            logger.info(f"Searching on YouTube Music: '{search_q}'")
 
+            results = self.ytmusic.search(search_q, filter="songs", limit=15)
+            if not results:
+                results = self.ytmusic.search(search_q, limit=15)
+            if not results:
+                logger.warning(f"No results found for '{search_q}'")
+                return None, None, None
 
-def _obtener_info_playlist_spotify(url):
-    """Gets information from a Spotify playlist."""
-    global sp
-    if not sp:
-        logger.error("Spotify client not available")
-        return None
+            # Build a combined query string for fuzzy comparison
+            query_combined = f"{title} {artist or ''}".strip()
+            best: dict | None = None
+            best_score: float = 0.0
 
-    try:
-        playlist_id = url.split("/playlist/")[1].split("?")[0].split("/")[0]
-        logger.info(f"Getting Spotify playlist info: {playlist_id}")
-        playlist = sp.playlist(playlist_id)
+            for r in results:
+                if not r.get("videoId"):
+                    continue
+                r_title = r.get("title", "")
+                r_artists = r.get("artists", [])
+                r_artist = r_artists[0].get("name", "") if r_artists else ""
+                result_combined = f"{r_title} {r_artist}".strip()
+                score = self._match_score(query_combined, result_combined)
+                if score > best_score:
+                    best_score = score
+                    best = r
 
-        if not playlist:
-            return None
+            if best and best_score >= 0.5:
+                vid = best["videoId"]
+                t = best.get("title", search_q)
+                arts = best.get("artists", [])
+                a = arts[0].get("name", "Unknown") if arts else "Unknown"
+                url = f"https://music.youtube.com/watch?v={vid}"
+                logger.info(f"Match found ({best_score:.0%}): '{t}' by '{a}'")
+                return url, t, a
 
-        playlist_info = {
-            "titulo": playlist.get("name", "Playlist sin título"),
-            "descripcion": playlist.get("description", ""),
-            "autor": playlist.get("owner", {}).get("display_name", "Desconocido"),
-            "total": playlist.get("tracks", {}).get("total", 0),
-            "thumbnail": (
-                playlist.get("images", [{}])[0].get("url", "")
-                if playlist.get("images")
-                else ""
-            ),
-            "items": [],
-        }
-
-        offset = 0
-        limit = 100
-        while True:
-            results = sp.playlist_tracks(
-                playlist_id,
-                offset=offset,
-                limit=limit,
-                fields="items(track(id,name,artists,duration_ms,album(images))),next,total",
+            logger.warning(
+                f"No sufficient match for '{title}' (best: {best_score:.0%})"
             )
-            if not results or not results.get("items"):
-                break
+            return None, None, None
+        except Exception as e:
+            logger.error(f"Error searching YouTube Music: {e}")
+            return None, None, None
 
-            for item in results["items"]:
-                track = item.get("track")
-                if not track:
-                    continue
-                track_id = track.get("id", "")
-                if not track_id:
-                    continue
+    # ------------------------------------------------------------------
+    # Media info
+    # ------------------------------------------------------------------
 
-                artists = track.get("artists", [])
-                artist_name = ", ".join(
-                    [a.get("name", "") for a in artists if a.get("name")]
-                )
-                duration_ms = track.get("duration_ms", 0)
-                duration_seconds = duration_ms // 1000
-                minutes = duration_seconds // 60
-                seconds = duration_seconds % 60
-                duration_str = f"{minutes}:{seconds:02d}"
+    def get_media_info(self, url: str, config: dict | None = None) -> dict | None:
+        """Return basic info (title, thumbnail, author, duration) for a single item."""
+        if not url:
+            return None
+        probe_dir: Path | None = None
+        cookie_file: Path | None = None
+        try:
+            if config:
+                probe_dir = Path(tempfile.mkdtemp(prefix="offliner-probe-"))
+                cookie_file = self._setup_cookies(config, probe_dir)
 
-                album_images = track.get("album", {}).get("images", [])
-                thumbnail = album_images[0].get("url", "") if album_images else ""
-                track_url = f"https://open.spotify.com/track/{track_id}"
+            source = self.detect_url_source(url)
+            if source == "spotify":
+                return self._get_spotify_info(url)
+            return self._get_youtube_info(url, source or "youtube", cookie_file)
+        except Exception as e:
+            logger.error(f"Error getting media info: {e}")
+            return None
+        finally:
+            if probe_dir and probe_dir.exists():
+                shutil.rmtree(probe_dir, ignore_errors=True)
 
-                track_item = {
-                    "id": track_id,
-                    "titulo": track.get("name", "Sin título"),
-                    "url": track_url,
-                    "duracion": duration_str,
-                    "duracion_segundos": duration_seconds,
-                    "thumbnail": thumbnail,
-                    "autor": artist_name,
+    def _get_youtube_info(
+        self, url: str, source: str = "youtube", cookie_file: Path | None = None
+    ) -> dict | None:
+        try:
+            opts = self._base_ytdlp_opts(cookie_file)
+            if cookie_file:
+                # For metadata probes with authenticated cookies, let yt-dlp
+                # auto-select the client surface; forcing a specific client can
+                # return 400/sign-in errors in some accounts.
+                opts.pop("extractor_args", None)
+            opts.update(
+                {
+                    "extract_flat": False,
+                    "skip_download": True,
+                    # Probing metadata should not fail just because a selected
+                    # format is unavailable for the current auth context.
+                    "check_formats": None,
                 }
-                playlist_info["items"].append(track_item)
-
-            if not results.get("next"):
-                break
-            offset += limit
-
-        playlist_info["total"] = len(playlist_info["items"])
-        logger.info(
-            f"Spotify playlist obtained: '{playlist_info['titulo']}' with {playlist_info['total']} tracks"
-        )
-        return playlist_info
-
-    except Exception as e:
-        logger.error(f"Error getting Spotify playlist: {e}")
-        return None
-
-
-def _obtener_info_playlist_spotify_album(url):
-    """Gets information from a Spotify album (treated as a playlist)."""
-    global sp
-    if not sp:
-        logger.error("Spotify client not available")
-        return None
-
-    try:
-        album_id = url.split("/album/")[1].split("?")[0].split("/")[0]
-        logger.info(f"Getting Spotify album info: {album_id}")
-        album = sp.album(album_id)
-
-        if not album:
+            )
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if not info:
+                    return None
+                dur_s = info.get("duration", 0) or 0
+                dur_str = f"{dur_s // 60}:{dur_s % 60:02d}" if dur_s else "0:00"
+                thumb = ""
+                for t in reversed(info.get("thumbnails", [])):
+                    if t.get("url"):
+                        thumb = t["url"]
+                        break
+                thumb = thumb or info.get("thumbnail", "")
+                return {
+                    "titulo": info.get("title", "Sin título"),
+                    "thumbnail": thumb,
+                    "autor": info.get("uploader", info.get("channel", "Desconocido")),
+                    "duracion": dur_str,
+                    "duracion_segundos": dur_s,
+                    "fuente": source,
+                }
+        except Exception as e:
+            logger.error(f"Error getting YouTube info: {e}")
             return None
 
-        artistas = [a["name"] for a in album.get("artists", [])]
-        album_artist = ", ".join(artistas) if artistas else "Desconocido"
+    def _get_spotify_info(self, url: str) -> dict | None:
+        client = self._get_spotify_client({})
+        if not client:
+            logger.warning("Spotify not configured")
+            return None
+        try:
+            if "/track/" in url:
+                tid = url.split("/track/")[1].split("?")[0].split("/")[0]
+                track = client.track(tid)
+                if not track:
+                    return None
+                artists = (
+                    ", ".join(
+                        a["name"] for a in track.get("artists", []) if a.get("name")
+                    )
+                    or "Desconocido"
+                )
+                imgs = track.get("album", {}).get("images", [])
+                dur_ms = track.get("duration_ms", 0)
+                dur_s = dur_ms // 1000
+                return {
+                    "titulo": track.get("name", "Sin título"),
+                    "thumbnail": imgs[0]["url"] if imgs else "",
+                    "autor": artists,
+                    "duracion": f"{dur_s // 60}:{dur_s % 60:02d}",
+                    "duracion_segundos": dur_s,
+                    "fuente": "spotify",
+                }
+            elif "/album/" in url:
+                aid = url.split("/album/")[1].split("?")[0].split("/")[0]
+                album = client.album(aid)
+                if not album:
+                    return None
+                artists = (
+                    ", ".join(
+                        a["name"] for a in album.get("artists", []) if a.get("name")
+                    )
+                    or "Desconocido"
+                )
+                imgs = album.get("images", [])
+                total = album.get("total_tracks", 0)
+                return {
+                    "titulo": album.get("name", "Sin título"),
+                    "thumbnail": imgs[0]["url"] if imgs else "",
+                    "autor": artists,
+                    "duracion": f"{total} tracks",
+                    "duracion_segundos": 0,
+                    "fuente": "spotify",
+                    "es_playlist": True,
+                }
+            return None
+        except Exception as e:
+            logger.error(f"Error getting Spotify info: {e}")
+            return None
 
-        album_info = {
-            "titulo": album.get("name", "Album sin título"),
-            "descripcion": "",
-            "autor": album_artist,
-            "total": album.get("total_tracks", 0),
-            "thumbnail": (
+    # ------------------------------------------------------------------
+    # Playlist info
+    # ------------------------------------------------------------------
+
+    def get_playlist_info(self, url: str, config: dict | None = None) -> dict | None:
+        """Full playlist metadata + item list (YouTube / YTM / Spotify)."""
+        probe_dir: Path | None = None
+        cookie_file: Path | None = None
+        try:
+            if config:
+                probe_dir = Path(tempfile.mkdtemp(prefix="offliner-probe-"))
+                cookie_file = self._setup_cookies(config, probe_dir)
+
+            if "spotify.com" in url:
+                if "/playlist/" in url:
+                    return self._spotify_playlist_info(url)
+                if "/album/" in url:
+                    return self._spotify_album_info(url)
+
+            is_ytm = "music.youtube.com" in url
+            playlist_id: str | None = None
+            if "list=" in url:
+                parsed = urllib.parse.urlparse(url)
+                params = urllib.parse.parse_qs(parsed.query)
+                playlist_id = params.get("list", [None])[0]
+
+            if is_ytm and self.ytmusic and playlist_id:
+                result = self._ytmusic_playlist_info(playlist_id)
+                if result:
+                    return result
+
+            normalized = (
+                url.replace("music.youtube.com", "www.youtube.com") if is_ytm else url
+            )
+            return self._ytdlp_playlist_info(normalized, cookie_file)
+        except Exception as e:
+            logger.error(f"Error getting playlist info: {e}")
+            return None
+        finally:
+            if probe_dir and probe_dir.exists():
+                shutil.rmtree(probe_dir, ignore_errors=True)
+
+    # --- Spotify playlist / album info ----------------------------------------
+
+    def _spotify_playlist_info(self, url: str) -> dict | None:
+        client = self._get_spotify_client({})
+        if not client:
+            logger.error("Spotify client not available")
+            return None
+        try:
+            pid = url.split("/playlist/")[1].split("?")[0].split("/")[0]
+            logger.info(f"Getting Spotify playlist info: {pid}")
+            playlist = client.playlist(pid)
+            if not playlist:
+                return None
+
+            info: dict[str, Any] = {
+                "titulo": playlist.get("name", "Playlist sin título"),
+                "descripcion": playlist.get("description", ""),
+                "autor": playlist.get("owner", {}).get("display_name", "Desconocido"),
+                "total": playlist.get("tracks", {}).get("total", 0),
+                "thumbnail": (
+                    playlist.get("images", [{}])[0].get("url", "")
+                    if playlist.get("images")
+                    else ""
+                ),
+                "items": [],
+            }
+
+            offset, limit = 0, 100
+            while True:
+                page = client.playlist_tracks(
+                    pid,
+                    offset=offset,
+                    limit=limit,
+                    fields="items(track(id,name,artists,duration_ms,album(images))),next,total",
+                )
+                if not page or not page.get("items"):
+                    break
+                for item in page["items"]:
+                    track = item.get("track")
+                    if not track or not track.get("id"):
+                        continue
+                    info["items"].append(self._spotify_track_to_item(track))
+                if not page.get("next"):
+                    break
+                offset += limit
+
+            info["total"] = len(info["items"])
+            logger.info(
+                f"Spotify playlist obtained: '{info['titulo']}' "
+                f"with {info['total']} tracks"
+            )
+            return info
+        except Exception as e:
+            logger.error(f"Error getting Spotify playlist: {e}")
+            return None
+
+    def _spotify_album_info(self, url: str) -> dict | None:
+        client = self._get_spotify_client({})
+        if not client:
+            logger.error("Spotify client not available")
+            return None
+        try:
+            aid = url.split("/album/")[1].split("?")[0].split("/")[0]
+            logger.info(f"Getting Spotify album info: {aid}")
+            album = client.album(aid)
+            if not album:
+                return None
+
+            album_artist = (
+                ", ".join(a["name"] for a in album.get("artists", [])) or "Desconocido"
+            )
+            thumb = (
                 album.get("images", [{}])[0].get("url", "")
                 if album.get("images")
                 else ""
-            ),
-            "items": [],
-        }
+            )
 
-        # Get all tracks from the album
-        offset = 0
-        limit = 50
-        while True:
-            results = sp.album_tracks(album_id, offset=offset, limit=limit)
-            if not results or not results.get("items"):
-                break
+            info: dict[str, Any] = {
+                "titulo": album.get("name", "Album sin título"),
+                "descripcion": "",
+                "autor": album_artist,
+                "total": album.get("total_tracks", 0),
+                "thumbnail": thumb,
+                "items": [],
+            }
 
-            for track in results["items"]:
-                if not track:
-                    continue
-                track_id = track.get("id", "")
-                if not track_id:
-                    continue
-
-                artists = track.get("artists", [])
-                artist_name = ", ".join(
-                    [a.get("name", "") for a in artists if a.get("name")]
-                )
-                duration_ms = track.get("duration_ms", 0)
-                duration_seconds = duration_ms // 1000
-                minutes = duration_seconds // 60
-                seconds = duration_seconds % 60
-                duration_str = f"{minutes}:{seconds:02d}"
-
-                # Use the album's cover art for all tracks
-                thumbnail = album_info["thumbnail"]
-                track_url = f"https://open.spotify.com/track/{track_id}"
-
-                track_item = {
-                    "id": track_id,
-                    "titulo": track.get("name", "Sin título"),
-                    "url": track_url,
-                    "duracion": duration_str,
-                    "duracion_segundos": duration_seconds,
-                    "thumbnail": thumbnail,
-                    "autor": artist_name,
-                }
-                album_info["items"].append(track_item)
-
-            if not results.get("next"):
-                break
-            offset += limit
-
-        album_info["total"] = len(album_info["items"])
-        logger.info(
-            f"Spotify album obtained: '{album_info['titulo']}' with {album_info['total']} tracks"
-        )
-        return album_info
-
-    except Exception as e:
-        logger.error(f"Error getting Spotify album: {e}")
-        return None
-
-
-# ============================================
-# Playlist Functions
-# ============================================
-
-
-def obtener_playlist(config, plataforma, playlist_url):
-    """Gets videos from a YouTube or Spotify playlist."""
-    try:
-        logger.info(f"Getting songs from {plataforma} playlist...")
-        urls = []
-
-        if plataforma == "YouTube":
-            ydl_opts = obtener_opciones_base_ytdlp()
-            ydl_opts.update({"extract_flat": True, "force_generic_extractor": True})
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                result = ydl.extract_info(playlist_url, download=False)
-                if "entries" in result:
-                    urls = [entry["url"] for entry in result["entries"]]
-
-        elif plataforma == "Spotify":
-            global sp
-            if sp and config.get("Client_ID") == SPOTIFY_CLIENT_ID:
-                spotify_client = sp
-            else:
-                client_credentials_manager = SpotifyClientCredentials(
-                    config["Client_ID"], config["Secret_ID"]
-                )
-                spotify_client = spotipy.Spotify(
-                    client_credentials_manager=client_credentials_manager,
-                    requests_timeout=10,
-                )
-
-            canciones_totales = []
-            offset = 0
+            offset, limit = 0, 50
             while True:
-                resultados = spotify_client.playlist_items(playlist_url, offset=offset)
-                if not resultados["items"]:
+                page = client.album_tracks(aid, offset=offset, limit=limit)
+                if not page or not page.get("items"):
                     break
-                for item in resultados["items"]:
-                    track = item["track"]
-                    canciones_totales.append(
-                        (track["name"], track["artists"][0]["name"])
-                    )
-                offset += len(resultados["items"])
-                if offset >= resultados["total"]:
+                for track in page["items"]:
+                    if not track or not track.get("id"):
+                        continue
+                    item = self._spotify_track_to_item(track)
+                    # Album tracks don't carry album images; reuse the album thumb
+                    item["thumbnail"] = thumb
+                    info["items"].append(item)
+                if not page.get("next"):
                     break
+                offset += limit
 
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                consultas_youtube = [
-                    f"{nombre_cancion} {nombre_artista} Oficial audio"
-                    for nombre_cancion, nombre_artista in canciones_totales
-                ]
-                resultados_youtube = list(
-                    executor.map(buscar_cancion_youtube, consultas_youtube)
-                )
-                urls.extend(resultados_youtube)
+            info["total"] = len(info["items"])
+            logger.info(
+                f"Spotify album obtained: '{info['titulo']}' "
+                f"with {info['total']} tracks"
+            )
+            return info
+        except Exception as e:
+            logger.error(f"Error getting Spotify album: {e}")
+            return None
 
-        logger.info(f"Got {len(urls)} video(s) from {plataforma} playlist")
-        return urls
-
-    except Exception as e:
-        logger.error(f"Error getting playlist from {plataforma}: {e}")
-        return []
-
-
-def obtener_info_playlist(url):
-    """Gets complete playlist info from YouTube, YouTube Music, or Spotify without downloading."""
-    global ytmusic, sp
-
-    try:
-        if "spotify.com" in url and "/playlist/" in url:
-            return _obtener_info_playlist_spotify(url)
-
-        if "spotify.com" in url and "/album/" in url:
-            return _obtener_info_playlist_spotify_album(url)
-
-        es_youtube_music = "music.youtube.com" in url
-        playlist_id = None
-        if "list=" in url:
-            import urllib.parse
-
-            parsed = urllib.parse.urlparse(url)
-            params = urllib.parse.parse_qs(parsed.query)
-            playlist_id = params.get("list", [None])[0]
-
-        if es_youtube_music and ytmusic and playlist_id:
-            try:
-                logger.info(
-                    f"Getting YouTube Music playlist using ytmusicapi: {playlist_id}"
-                )
-                yt_playlist = ytmusic.get_playlist(playlist_id, limit=None)
-
-                if yt_playlist and "tracks" in yt_playlist:
-                    playlist_info = {
-                        "titulo": yt_playlist.get("title", "Playlist sin título"),
-                        "descripcion": yt_playlist.get("description", ""),
-                        "autor": yt_playlist.get("author", {}).get(
-                            "name", "Desconocido"
-                        ),
-                        "total": len(yt_playlist.get("tracks", [])),
-                        "thumbnail": (
-                            yt_playlist.get("thumbnails", [{}])[-1].get("url", "")
-                            if yt_playlist.get("thumbnails")
-                            else ""
-                        ),
-                        "items": [],
-                    }
-
-                    for track in yt_playlist.get("tracks", []):
-                        if not track:
-                            continue
-                        video_id = track.get("videoId", "")
-                        if not video_id:
-                            continue
-
-                        duration_text = track.get("duration", "")
-                        duration_seconds = 0
-                        if duration_text:
-                            parts = duration_text.split(":")
-                            try:
-                                if len(parts) == 2:
-                                    duration_seconds = int(parts[0]) * 60 + int(
-                                        parts[1]
-                                    )
-                                elif len(parts) == 3:
-                                    duration_seconds = (
-                                        int(parts[0]) * 3600
-                                        + int(parts[1]) * 60
-                                        + int(parts[2])
-                                    )
-                            except ValueError:
-                                pass
-
-                        artists = track.get("artists", [])
-                        artist_name = (
-                            ", ".join(
-                                [a.get("name", "") for a in artists if a.get("name")]
-                            )
-                            if artists
-                            else ""
-                        )
-                        thumbnails = track.get("thumbnails", [])
-                        thumbnail = thumbnails[-1].get("url", "") if thumbnails else ""
-                        if not thumbnail and video_id:
-                            thumbnail = (
-                                f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg"
-                            )
-
-                        item = {
-                            "id": video_id,
-                            "video_id": video_id,
-                            "titulo": track.get("title", "Sin título"),
-                            "url": f"https://www.youtube.com/watch?v={video_id}",
-                            "duracion": duration_text or "--:--",
-                            "duracion_segundos": duration_seconds,
-                            "thumbnail": thumbnail,
-                            "autor": artist_name,
-                        }
-                        playlist_info["items"].append(item)
-
-                    playlist_info["total"] = len(playlist_info["items"])
-                    logger.info(
-                        f"Playlist obtained via ytmusicapi: '{playlist_info['titulo']}' with {playlist_info['total']} items"
-                    )
-                    return playlist_info
-
-            except Exception as e:
-                logger.warning(f"Error with ytmusicapi, using yt-dlp: {e}")
-
-        url_normalizada = url
-        if es_youtube_music:
-            url_normalizada = url.replace("music.youtube.com", "www.youtube.com")
-
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "extract_flat": "in_playlist",
-            "skip_download": True,
-            "ignoreerrors": True,
-            "playlistend": None,
-            "extractor_retries": 3,
-            "socket_timeout": 30,
+    @staticmethod
+    def _spotify_track_to_item(track: dict) -> dict:
+        """Convert a Spotify track dict into a standard playlist item dict."""
+        artists = ", ".join(
+            a.get("name", "") for a in track.get("artists", []) if a.get("name")
+        )
+        dur_s = (track.get("duration_ms", 0) or 0) // 1000
+        album_imgs = track.get("album", {}).get("images", [])
+        return {
+            "id": track["id"],
+            "titulo": track.get("name", "Sin título"),
+            "url": f"https://open.spotify.com/track/{track['id']}",
+            "duracion": f"{dur_s // 60}:{dur_s % 60:02d}",
+            "duracion_segundos": dur_s,
+            "thumbnail": album_imgs[0].get("url", "") if album_imgs else "",
+            "autor": artists,
         }
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            result = ydl.extract_info(url_normalizada, download=False)
+    # --- YouTube Music playlist info ------------------------------------------
+
+    def _ytmusic_playlist_info(self, playlist_id: str) -> dict | None:
+        try:
+            logger.info(
+                f"Getting YouTube Music playlist using ytmusicapi: {playlist_id}"
+            )
+            pl = self.ytmusic.get_playlist(playlist_id, limit=None)  # type: ignore[union-attr]
+            if not pl or "tracks" not in pl:
+                return None
+
+            info: dict[str, Any] = {
+                "titulo": pl.get("title", "Playlist sin título"),
+                "descripcion": pl.get("description", ""),
+                "autor": pl.get("author", {}).get("name", "Desconocido"),
+                "total": len(pl.get("tracks", [])),
+                "thumbnail": (
+                    pl.get("thumbnails", [{}])[-1].get("url", "")
+                    if pl.get("thumbnails")
+                    else ""
+                ),
+                "items": [],
+            }
+
+            for t in pl.get("tracks", []):
+                vid = t.get("videoId", "")
+                if not vid:
+                    continue
+                dur_txt = t.get("duration", "")
+                dur_s = self._parse_duration_str(dur_txt)
+                artists = ", ".join(
+                    a.get("name", "") for a in t.get("artists", []) if a.get("name")
+                )
+                thumbs = t.get("thumbnails", [])
+                thumb = (
+                    thumbs[-1].get("url", "")
+                    if thumbs
+                    else f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg"
+                )
+                info["items"].append(
+                    {
+                        "id": vid,
+                        "video_id": vid,
+                        "titulo": t.get("title", "Sin título"),
+                        "url": f"https://www.youtube.com/watch?v={vid}",
+                        "duracion": dur_txt or "--:--",
+                        "duracion_segundos": dur_s,
+                        "thumbnail": thumb,
+                        "autor": artists,
+                    }
+                )
+
+            info["total"] = len(info["items"])
+            logger.info(
+                f"Playlist obtained via ytmusicapi: '{info['titulo']}' "
+                f"with {info['total']} items"
+            )
+            return info
+        except Exception as e:
+            logger.warning(f"Error with ytmusicapi, using yt-dlp: {e}")
+            return None
+
+    # --- yt-dlp playlist info -------------------------------------------------
+
+    def _ytdlp_playlist_info(
+        self, url: str, cookie_file: Path | None = None
+    ) -> dict | None:
+        opts = self._base_ytdlp_opts(cookie_file)
+        if cookie_file:
+            opts.pop("extractor_args", None)
+        opts.update(
+            {
+                "extract_flat": "in_playlist",
+                "skip_download": True,
+                "ignoreerrors": True,
+                "playlistend": None,
+                "extractor_retries": 3,
+                "socket_timeout": 30,
+                "check_formats": None,
+            }
+        )
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            result = ydl.extract_info(url, download=False)
             if not result:
                 return None
             if result.get("_type") != "playlist" and "entries" not in result:
                 return None
 
-            playlist_info = {
+            info: dict[str, Any] = {
                 "titulo": result.get("title", "Playlist sin título"),
                 "descripcion": result.get("description", ""),
                 "autor": result.get("uploader", result.get("channel", "Desconocido")),
@@ -2139,233 +1218,1227 @@ def obtener_info_playlist(url):
             }
 
             entries = result.get("entries", [])
-            entries_list = (
-                list(entries)
-                if entries and not isinstance(entries, list)
-                else (entries or [])
-            )
+            if entries and not isinstance(entries, list):
+                entries = list(entries)
 
-            for entry in entries_list:
+            for entry in entries or []:
                 if entry is None:
                     continue
-                duration_seconds = entry.get("duration", 0) or 0
-                if duration_seconds:
-                    minutes = int(duration_seconds // 60)
-                    seconds = int(duration_seconds % 60)
-                    duracion_str = f"{minutes}:{seconds:02d}"
+                dur_s = entry.get("duration", 0) or 0
+                dur_str = (
+                    f"{int(dur_s // 60)}:{int(dur_s % 60):02d}" if dur_s else "--:--"
+                )
+                vid = entry.get("id", entry.get("url", ""))
+                if vid and not vid.startswith("http"):
+                    v_url = f"https://www.youtube.com/watch?v={vid}"
                 else:
-                    duracion_str = "--:--"
+                    v_url = entry.get("url", "")
+                thumb = entry.get("thumbnail", "") or (
+                    f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg" if vid else ""
+                )
+                info["items"].append(
+                    {
+                        "id": vid,
+                        "video_id": vid,
+                        "titulo": entry.get("title", "Sin título"),
+                        "url": v_url,
+                        "duracion": dur_str,
+                        "duracion_segundos": dur_s,
+                        "thumbnail": thumb,
+                        "autor": entry.get("uploader", entry.get("channel", "")),
+                    }
+                )
 
-                video_id = entry.get("id", entry.get("url", ""))
-                if video_id and not video_id.startswith("http"):
-                    video_url = f"https://www.youtube.com/watch?v={video_id}"
-                else:
-                    video_url = entry.get("url", "")
-
-                thumbnail = entry.get("thumbnail", "")
-                if not thumbnail and video_id:
-                    thumbnail = f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg"
-
-                item = {
-                    "id": video_id,
-                    "video_id": video_id,
-                    "titulo": entry.get("title", "Sin título"),
-                    "url": video_url,
-                    "duracion": duracion_str,
-                    "duracion_segundos": duration_seconds,
-                    "thumbnail": thumbnail,
-                    "autor": entry.get("uploader", entry.get("channel", "")),
-                }
-                playlist_info["items"].append(item)
-
-            playlist_info["total"] = len(playlist_info["items"])
+            info["total"] = len(info["items"])
             logger.info(
-                f"Playlist obtained: '{playlist_info['titulo']}' with {playlist_info['total']} items"
+                f"Playlist obtained: '{info['titulo']}' " f"with {info['total']} items"
             )
-            return playlist_info
+            return info
 
-    except Exception as e:
-        logger.error(f"Error getting playlist info: {e}")
-        return None
+    # ------------------------------------------------------------------
+    # Playlist URL resolution (download-time)
+    # ------------------------------------------------------------------
+
+    def _resolve_playlist_urls(
+        self, config: dict, platform: str, url: str
+    ) -> list[str]:
+        """Return a flat list of downloadable URLs from a playlist."""
+        try:
+            logger.info(f"Getting songs from {platform} playlist...")
+            urls: list[str] = []
+
+            if platform == "YouTube":
+                opts = self._base_ytdlp_opts()
+                opts.update({"extract_flat": True, "force_generic_extractor": True})
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    result = ydl.extract_info(url, download=False)
+                    if result and "entries" in result:
+                        urls = [e["url"] for e in result["entries"]]
+
+            elif platform == "Spotify":
+                client = self._get_spotify_client(config)
+                if not client:
+                    logger.error("Spotify client not available")
+                    return []
+                tracks = self._collect_spotify_tracks(client, url)
+                if tracks:
+                    queries = [f"{n} {a}" for n, a in tracks]
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        resolved = list(pool.map(self.search_youtube, queries))
+                    urls.extend(u for u in resolved if u)
+
+            logger.info(f"Got {len(urls)} video(s) from {platform} playlist")
+            return urls
+        except Exception as e:
+            logger.error(f"Error getting playlist from {platform}: {e}")
+            return []
+
+    @staticmethod
+    def _collect_spotify_tracks(
+        client: spotipy.Spotify, url: str
+    ) -> list[tuple[str, str]]:
+        """Return ``[(track_name, artist_name), ...]`` from a Spotify URL."""
+        tracks: list[tuple[str, str]] = []
+
+        if "/playlist/" in url:
+            pid = url.split("/playlist/")[1].split("?")[0].split("/")[0]
+            offset = 0
+            while True:
+                page = client.playlist_items(pid, offset=offset)
+                if not page or not page.get("items"):
+                    break
+                for item in page["items"]:
+                    t = item.get("track")
+                    if t and t.get("name") and t.get("artists"):
+                        tracks.append((t["name"], t["artists"][0]["name"]))
+                offset += len(page["items"])
+                if offset >= page.get("total", 0):
+                    break
+
+        elif "/album/" in url:
+            aid = url.split("/album/")[1].split("?")[0].split("/")[0]
+            album = client.album(aid)
+            if not album:
+                return tracks
+            fallback = ([a["name"] for a in album.get("artists", [])] or [""])[0]
+            offset = 0
+            while True:
+                page = client.album_tracks(aid, offset=offset, limit=50)
+                if not page or not page.get("items"):
+                    break
+                for t in page["items"]:
+                    if t and t.get("name"):
+                        a = t["artists"][0]["name"] if t.get("artists") else fallback
+                        tracks.append((t["name"], a))
+                if not page.get("next"):
+                    break
+                offset += len(page["items"])
+
+        return tracks
+
+    # ------------------------------------------------------------------
+    # yt-dlp progress hooks (for SSE real-time updates)
+    # ------------------------------------------------------------------
+
+    def _make_progress_hook(self, request_id: str) -> Callable:
+        """Create a yt-dlp progress_hook that writes to DownloadProgressStore."""
+
+        def hook(d: dict) -> None:
+            # If cancellation has been requested (client disconnected), raise to abort yt-dlp
+            try:
+                if DownloadProgressStore.is_cancelled(request_id):
+                    raise yt_dlp.utils.DownloadError("Cancelled by client disconnect")
+            except Exception:
+                # In case yt_dlp references aren't available yet or other errors,
+                # just raise a generic exception to abort.
+                raise
+            status = d.get("status", "")
+            if status == "downloading":
+                downloaded = d.get("downloaded_bytes", 0) or 0
+                total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+                item_pct = (downloaded / total * 100) if total > 0 else 0
+
+                store = DownloadProgressStore.get(request_id)
+                completed = store.get("completed_items", 0)
+                total_items = max(store.get("total_items", 1), 1)
+
+                # Map to 15-90% range
+                overall = 15 + ((completed + item_pct / 100) / total_items) * 75
+
+                speed = d.get("speed")
+                speed_str = self._format_speed(speed) if speed else ""
+                eta = d.get("eta")
+                eta_str = self._format_eta(eta) if eta else ""
+                filename = Path(d.get("filename", "")).stem
+
+                DownloadProgressStore.update(
+                    request_id,
+                    percent=min(int(overall), 90),
+                    status="Downloading...",
+                    detail=filename[:60] if filename else "",
+                    speed=speed_str,
+                    eta=eta_str,
+                    current_file=filename,
+                    phase="downloading",
+                )
+            elif status == "finished":
+                filename = Path(d.get("filename", "")).stem
+                DownloadProgressStore.update(
+                    request_id,
+                    status="Converting...",
+                    detail=f"Processing {filename[:50]}",
+                    phase="converting",
+                    speed="",
+                    eta="",
+                )
+
+        return hook
+
+    def _make_postprocessor_hook(self, request_id: str) -> Callable:
+        """Create a yt-dlp postprocessor_hook for SSE status updates."""
+
+        def hook(d: dict) -> None:
+            status = d.get("status", "")
+            pp = d.get("postprocessor", "")
+            if status == "started" and pp:
+                label = (
+                    pp.replace("FFmpeg", "")
+                    .replace("Extract", "Extracting ")
+                    .replace("Embed", "Embedding ")
+                    .replace("Metadata", "metadata")
+                    .strip()
+                    or pp
+                )
+                DownloadProgressStore.update(
+                    request_id,
+                    status="Processing...",
+                    detail=label,
+                    phase="converting",
+                )
+
+        return hook
+
+    @staticmethod
+    def _format_speed(speed_bps: float | None) -> str:
+        """Format bytes/sec into a human-readable string."""
+        if not speed_bps:
+            return ""
+        if speed_bps >= 1_048_576:
+            return f"{speed_bps / 1_048_576:.1f} MB/s"
+        if speed_bps >= 1024:
+            return f"{speed_bps / 1024:.0f} KB/s"
+        return f"{int(speed_bps)} B/s"
+
+    @staticmethod
+    def _format_eta(seconds: float | int | None) -> str:
+        """Format ETA seconds into a human-readable string."""
+        if not seconds or seconds < 0:
+            return ""
+        seconds = int(seconds)
+        if seconds >= 3600:
+            return f"{seconds // 3600}h {(seconds % 3600) // 60}m"
+        if seconds >= 60:
+            return f"{seconds // 60}m {seconds % 60}s"
+        return f"{seconds}s"
+
+    # ------------------------------------------------------------------
+    # Unified media download  (DRY merge of audio + video)
+    # ------------------------------------------------------------------
+
+    def _download_media(
+        self,
+        url: str,
+        format_mode: str,  # "audio" | "video"
+        config: dict,
+        result: _DownloadResult,
+        session_dir: Path,
+        cookie_file: Path | None = None,
+    ) -> None:
+        """Download a single item as audio or video into *session_dir*.
+
+        Handles Spotify conversion, ffmpeg check, quality selection,
+        SponsorBlock, metadata embedding, and sidecar cleanup.
+        All files are written strictly inside ``session_dir``.
+        """
+        is_audio = format_mode == "audio"
+
+        try:
+            # --- Spotify URL conversion ---
+            if "spotify.com" in url and "/track/" in url:
+                logger.info("Detected Spotify URL, converting to YouTube")
+                url = self._resolve_spotify_track(config, url)
+                if not url:
+                    result.inc_error(format_mode)
+                    return
+
+            # --- ffmpeg check (warn if missing, but don't abort) ---
+            if not self._ffmpeg_available:
+                logger.warning(
+                    "ffmpeg is not installed or not in PATH; some post-processing may fail."
+                )
+
+            # --- Pre-flight metadata extraction ---
+            try:
+                with yt_dlp.YoutubeDL(self._base_ytdlp_opts(cookie_file)) as ydl:
+                    info = ydl.extract_info(url, download=False)
+            except Exception:
+                if not cookie_file:
+                    raise
+                # Retry once without forced extractor_args for cookie-auth flows.
+                fb_opts = self._base_ytdlp_opts(cookie_file)
+                fb_opts.pop("extractor_args", None)
+                with yt_dlp.YoutubeDL(fb_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+
+            def _has_playable_formats(data: dict) -> bool:
+                fmts = data.get("formats", []) or []
+                return any(
+                    (f.get("vcodec") and f.get("vcodec") != "none")
+                    or (f.get("acodec") and f.get("acodec") != "none")
+                    for f in fmts
+                )
+
+            if not _has_playable_formats(info):
+                # Try one fallback without forced player_client in case cookies are valid
+                # but the selected client surface returned only storyboards.
+                if cookie_file:
+                    fb_opts = self._base_ytdlp_opts(cookie_file)
+                    fb_opts.pop("extractor_args", None)
+                    with yt_dlp.YoutubeDL(fb_opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
+
+                if not _has_playable_formats(info):
+                    logger.error(
+                        "No playable formats were returned (video likely needs valid logged-in cookies)."
+                    )
+                    result.inc_error(format_mode)
+                    if result.request_id:
+                        DownloadProgressStore.update(
+                            result.request_id,
+                            status="Error",
+                            detail="No playable formats. Check your cookies.",
+                            phase="error",
+                        )
+                    return
+
+            title = info.get("title", "Unknown Title")
+            uploader = info.get("uploader", "Unknown Uploader")
+            download_url = url
+
+            # --- YouTube Music preference (audio only) ---
+            if is_audio and config.get("Preferir_YouTube_Music", False):
+                logger.info(f"Searching for pure audio on YouTube Music: '{title}'")
+                ytm_url, _, _ = self.search_youtube_music(title, uploader)
+                if ytm_url:
+                    download_url = ytm_url
+
+            # --- Clean title for filename ---
+            clean_title = self._sanitize_filename(
+                title if is_audio else f"{title} - {uploader}"
+            )
+
+            # --- Output directory — always session_dir ---
+            out_dir = self._ensure_dir(session_dir)
+
+            # --- Format / quality ---
+            quality_key = config.get("Calidad_audio_video", "avg")
+
+            if is_audio:
+                _AUDIO_QUALITY: dict[str, tuple[str, str]] = {
+                    "min": ("worstaudio[abr<=96]/worstaudio/worst", "64"),
+                    "avg": (
+                        "bestaudio[abr<=160]/bestaudio[abr<=192]/bestaudio/best",
+                        "128",
+                    ),
+                    "max": ("bestaudio/best", "320"),
+                }
+                fmt_str, quality_val = _AUDIO_QUALITY.get(
+                    quality_key, _AUDIO_QUALITY["avg"]
+                )
+                file_format = config.get("Formato_audio", "mp3")
+            else:
+                # Prefer audio formats compatible with MP4 (e.g. m4a/AAC)
+                # when the requested container is mp4; otherwise allow
+                # broader selection (webm/opus etc.). This avoids producing
+                # MP4 files with Opus audio which some players (Windows)
+                # cannot play.
+                file_format = config.get("Formato_video", "mp4")
+
+                if file_format == "mp4":
+                    _VIDEO_QUALITY: dict[str, str] = {
+                        "min": "worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst[ext=mp4]/worst",
+                        "avg": "bestvideo[height<=1080]+bestaudio[ext=m4a]/bestaudio[height<=1080]/best[height<=1080]",
+                        "max": "bestvideo+bestaudio[ext=m4a]/bestaudio/best",
+                    }
+                else:
+                    _VIDEO_QUALITY = {
+                        "min": "worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst[ext=mp4]/worst",
+                        "avg": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
+                        "max": "bestvideo+bestaudio/best",
+                    }
+
+                fmt_str = _VIDEO_QUALITY.get(quality_key, _VIDEO_QUALITY["avg"])
+                quality_val = ""  # unused for video
+
+            logger.info(f"Downloading {format_mode}: '{title}'")
+
+            # --- Output template ---
+            # Use yt-dlp template macros so its internal postprocessors
+            # manage final filenames and thumbnail embedding.
+            outtmpl = str(out_dir / "%(title)s - %(uploader)s.%(ext)s")
+
+            # --- Postprocessors ---
+            postprocessors = list(self._sponsorblock_postprocessors(config))
+
+            if is_audio:
+                postprocessors.append(
+                    {
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": file_format,
+                        "preferredquality": quality_val,
+                    }
+                )
+
+            # Common: metadata + thumbnail conversion. EmbedThumbnail is only
+            # added when the final container/codec supports embedded cover art
+            # (yt-dlp/ffmpeg will error otherwise — e.g. WAV does not support it).
+            common_pp = [
+                {
+                    "key": "FFmpegMetadata",
+                    "add_chapters": True,
+                    "add_metadata": True,
+                },
+                {"key": "FFmpegThumbnailsConvertor", "format": "jpg"},
+            ]
+
+            # Supported targets for thumbnail embedding (yt-dlp/ffmpeg)
+            fmt = (file_format or "").lower()
+            if is_audio:
+                embed_supported = fmt in ("mp3", "ogg", "opus", "flac", "m4a")
+            else:
+                embed_supported = fmt in ("mp4", "m4v", "mov", "mkv", "mka")
+
+            if embed_supported:
+                common_pp.append({"key": "EmbedThumbnail"})
+
+            postprocessors.extend(common_pp)
+
+            # --- yt-dlp options (with cookie support) ---
+            ydl_opts = self._base_ytdlp_opts(cookie_file)
+            ydl_opts.update(
+                {
+                    "format": fmt_str,
+                    "postprocessors": postprocessors,
+                    "outtmpl": outtmpl,
+                    "trim_file_name_length": 184,
+                    "updatetime": False,
+                    "writethumbnail": True,
+                    "parse_metadata": [
+                        "%(artist,uploader)s:%(artist)s",
+                        "%(album,title)s:%(album)s",
+                        "%(title)s:%(title)s",
+                    ],
+                }
+            )
+
+            # Improve compatibility for MP3 cover-art tags on Windows players.
+            # These ffmpeg options are applied to yt-dlp postprocessing steps
+            # and help ensure ID3v2 artwork is recognized reliably.
+            if is_audio and file_format.lower() == "mp3":
+                ydl_opts["postprocessor_args"] = [
+                    "-id3v2_version",
+                    "3",
+                    "-write_id3v1",
+                    "1",
+                ]
+
+            if not is_audio:
+                video_opts: dict = {
+                    "format_sort": ["vext:mp4", "aext:m4a", "aext:mp3"],
+                    "merge_output_format": file_format,
+                    "concurrent_fragment_downloads": 3,
+                    "retries": 3,
+                }
+                ydl_opts.update(video_opts)
+
+            # --- yt-dlp progress hooks (SSE real-time updates) ---
+            if result.request_id:
+                ydl_opts["progress_hooks"] = [
+                    self._make_progress_hook(result.request_id)
+                ]
+                ydl_opts["postprocessor_hooks"] = [
+                    self._make_postprocessor_hook(result.request_id)
+                ]
+
+            # --- Download ---
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    dl_info = ydl.extract_info(download_url, download=True)
+            except Exception as e:
+                msg = str(e)
+                if (
+                    "SponsorBlock" in msg
+                    or "SponsorBlockPP" in msg
+                    or "unexpected keyword argument 'action'" in msg
+                ):
+                    logger.warning(
+                        f"SponsorBlock postprocessor failed: {e}. Retrying without SponsorBlock."
+                    )
+                    if result.request_id:
+                        DownloadProgressStore.update(
+                            result.request_id,
+                            detail="SponsorBlock falló; continuando sin SponsorBlock.",
+                        )
+
+                    # Remove SponsorBlock postprocessors and retry once
+                    filtered_pp = [
+                        p
+                        for p in postprocessors
+                        if not (isinstance(p, dict) and p.get("key") == "SponsorBlock")
+                    ]
+                    ydl_opts["postprocessors"] = filtered_pp
+                    try:
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                            dl_info = ydl.extract_info(download_url, download=True)
+                    except Exception as e2:
+                        logger.error(
+                            f"Download failed after disabling SponsorBlock: {e2}"
+                        )
+                        raise
+                else:
+                    raise
+
+            # --- Locate output file (robust detection) ---
+            final_path: Path | None = None
+
+            # 1) Prefer explicit paths reported by yt-dlp (requested_downloads)
+            if dl_info:
+                requested = dl_info.get("requested_downloads")
+                if requested and isinstance(requested, list):
+                    for r in requested:
+                        fp = r.get("filepath") or r.get("filename")
+                        if not fp:
+                            continue
+                        candidate = Path(fp)
+                        if candidate.exists():
+                            # If a postprocessor converted audio, check for the
+                            # converted extension next to the originally
+                            # downloaded file (common with FFmpegExtractAudio).
+                            if is_audio and file_format:
+                                alt = candidate.with_suffix(f".{file_format}")
+                                if alt.exists():
+                                    final_path = alt
+                                    break
+                            final_path = candidate
+                            break
+
+            # 2) Fallback: scan output directory for matching basename
+            if final_path is None:
+                candidates = list(out_dir.glob(f"{clean_title}.*"))
+                # Exclude known sidecar extensions
+                candidates = [
+                    p
+                    for p in candidates
+                    if p.suffix.lower() not in self._SIDECAR_EXTENSIONS
+                ]
+                if is_audio and file_format:
+                    # Prefer exact extension match
+                    for p in candidates:
+                        if p.suffix.lower() == f".{file_format}".lower():
+                            final_path = p
+                            break
+                if final_path is None and candidates:
+                    # Pick the largest candidate (likely the media file)
+                    candidates.sort(
+                        key=lambda p: p.stat().st_size if p.exists() else 0,
+                        reverse=True,
+                    )
+                    final_path = candidates[0]
+
+            # 3) Last-resort: reconstruct expected path
+            if final_path is None:
+                if is_audio:
+                    final_path = out_dir / f"{clean_title}.{file_format}"
+                else:
+                    final_path = self._resolve_video_output(
+                        dl_info, out_dir, clean_title, file_format
+                    )
+
+            if final_path and final_path.exists():
+                # Rely on yt-dlp's postprocessors (EmbedThumbnail) to have
+                # embedded the cover art. Clean sidecars and record result.
+                self._cleanup_sidecars(final_path)
+                result.inc_success(format_mode)
+                result.add_file(str(final_path))
+                logger.info(f"{format_mode.capitalize()} downloaded: '{title}'")
+            else:
+                logger.error(f"Output file not found after download: {final_path}")
+                result.inc_error(format_mode)
+
+        except Exception as e:
+            logger.error(f"Error downloading {format_mode}: {e}")
+            result.inc_error(format_mode)
+
+    @staticmethod
+    def _resolve_video_output(
+        dl_info: dict | None,
+        out_dir: Path,
+        clean_title: str,
+        file_format: str,
+    ) -> Path:
+        """Determine the actual video file path produced by yt-dlp."""
+        if dl_info:
+            requested = dl_info.get("requested_downloads")
+            if requested and isinstance(requested, list) and requested:
+                fp = requested[0].get("filepath") or requested[0].get("filename")
+                if fp:
+                    return Path(fp)
+        return out_dir / f"{clean_title}.{file_format}"
+
+    def _cleanup_sidecars(self, filepath: Path) -> None:
+        """Remove leftover thumbnail / subtitle sidecar files.
+
+        Handles both plain sidecars (``video.jpg``) and language-suffixed
+        subtitle sidecars produced by yt-dlp (``video.en.srt``,
+        ``video.es-orig.vtt``, etc.).
+        """
+        stem = filepath.stem
+        parent = filepath.parent
+        for ext in self._SIDECAR_EXTENSIONS:
+            # Plain sidecar: video.srt
+            sidecar = filepath.with_suffix(ext)
+            if sidecar.exists():
+                try:
+                    sidecar.unlink()
+                except OSError:
+                    pass
+            # Language-suffixed sidecars: video.en.srt, video.es-orig.vtt
+            for lang_file in parent.glob(f"{stem}.*{ext}"):
+                if lang_file != filepath:
+                    try:
+                        lang_file.unlink()
+                    except OSError:
+                        pass
+
+    # ------------------------------------------------------------------
+    # Compression
+    # ------------------------------------------------------------------
+
+    def compress_files(
+        self,
+        zip_name: str,
+        files: list[str],
+        output_folder: Path | str | None = None,
+    ) -> str | None:
+        """Compress *files* into a ZIP, delete originals, return ZIP path."""
+        try:
+            out = self._ensure_dir(
+                output_folder or self._base_dir / "Downloads" / "Zip"
+            )
+            clean_name = self._sanitize_filename(zip_name)
+            if clean_name.lower().endswith(".zip"):
+                clean_name = clean_name[:-4]
+            zip_path = out / f"{clean_name}.zip"
+
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                for f in files:
+                    zf.write(f, self._sanitize_filename(Path(f).name))
+            for f in files:
+                Path(f).unlink(missing_ok=True)
+
+            logger.info(f"Files compressed to '{zip_path.name}'")
+            return str(zip_path.resolve())
+        except Exception as e:
+            logger.error(f"Error compressing files: {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # Parallel task execution
+    # ------------------------------------------------------------------
+
+    def _run_download_tasks(
+        self,
+        tasks: list[tuple[str, str, dict]],
+        result: _DownloadResult,
+        session_dir: Path,
+        cookie_file: Path | None,
+        max_workers: int,
+    ) -> None:
+        """Fan out ``(url, mode, config)`` tasks across a thread pool.
+
+        Progress is reported via ``result.progress_callback`` in a
+        thread-safe manner.
+        """
+        if not tasks:
+            return
+
+        result.total_items = max(len(tasks), 1)
+        if result.request_id:
+            DownloadProgressStore.update(
+                result.request_id, total_items=result.total_items
+            )
+        callback = result.progress_callback
+
+        def _worker(task: tuple[str, str, dict]) -> None:
+            url, mode, cfg = task
+            if callback:
+                callback(
+                    result.get_progress_pct(),
+                    f"Downloading {mode}...",
+                    f"Processing...",
+                )
+            # Check cancellation before starting this task
+            if result.request_id and DownloadProgressStore.is_cancelled(
+                result.request_id
+            ):
+                logger.info(f"Skipping task due to cancellation: {url}")
+                return
+
+            self._download_media(url, mode, cfg, result, session_dir, cookie_file)
+            result.inc_completed()
+            if result.request_id:
+                DownloadProgressStore.update(
+                    result.request_id,
+                    completed_items=result.completed_items,
+                )
+
+        effective_workers = min(max_workers, len(tasks))
+
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=effective_workers
+        ) as executor:
+            futures = [executor.submit(_worker, t) for t in tasks]
+            # Wait and propagate worker-level exceptions as log entries
+            for fut in concurrent.futures.as_completed(futures):
+                # If cancellation was requested globally, attempt to cancel remaining futures
+                if result.request_id and DownloadProgressStore.is_cancelled(
+                    result.request_id
+                ):
+                    logger.info("Cancellation requested - cancelling remaining tasks")
+                    for f in futures:
+                        if not f.done():
+                            try:
+                                f.cancel()
+                            except Exception:
+                                pass
+                    # Update progress store to reflect cancellation
+                    if result.request_id:
+                        DownloadProgressStore.update(
+                            result.request_id,
+                            status="Cancelled",
+                            detail="Cancelled by client disconnect",
+                            complete=True,
+                            error="Cancelled by client disconnect",
+                            percent=100,
+                            phase="cancelled",
+                        )
+                    break
+
+                try:
+                    fut.result()
+                except Exception as exc:
+                    logger.error(f"Download worker exception: {exc}")
+
+    # ------------------------------------------------------------------
+    # Entry points  (UUID isolation + cookie + parallel)
+    # ------------------------------------------------------------------
+
+    def download_with_progress(
+        self,
+        config: dict,
+        data: str,
+        filename: str = "archivos.zip",
+        progress_callback: Callable | None = None,
+        base_folder: str | None = None,
+        request_id: str | None = None,
+    ) -> str | None:
+        """Auto-detect URL type and download with progress reporting.
+
+        When *base_folder* is supplied (e.g. by ``routes.py``), it is used
+        directly and the **caller** is responsible for cleanup.  Otherwise a
+        UUID-scoped temporary directory is created and cleaned automatically
+        via ``try … finally``.
+        """
+        # --- Session directory & ownership ---
+        if base_folder:
+            session_dir = Path(base_folder)
+            owns_session = False
+        else:
+            session_id = uuid.uuid4().hex
+            session_dir = self._base_dir / "Downloads" / "Temp" / session_id
+            owns_session = True
+
+        try:
+            self._ensure_dir(session_dir)
+
+            # --- Per-session cookie provisioning ---
+            cookie_file = self._setup_cookies(config, session_dir)
+
+            result = _DownloadResult(progress_callback, request_id=request_id)
+            urls: list[str] = []
+
+            if progress_callback:
+                progress_callback(5, "Preparing...", "Analyzing request")
+
+            # --- URL resolution (unchanged logic) ---
+            data_lower = (data or "").lower()
+            is_yt = any(
+                p in data_lower
+                for p in ("youtube.com", "youtu.be", "music.youtube.com")
+            )
+            is_sp = "spotify.com" in data_lower
+
+            if is_sp:
+                if self.is_playlist_url(data):
+                    if progress_callback:
+                        progress_callback(
+                            10, "Getting playlist...", "Connecting to Spotify"
+                        )
+                    urls.extend(self._resolve_playlist_urls(config, "Spotify", data))
+                else:
+                    if progress_callback:
+                        progress_callback(
+                            10, "Processing link...", "Spotify URL detected"
+                        )
+                    yt_url = self._resolve_spotify_track(config, data)
+                    if yt_url:
+                        urls.append(yt_url)
+            elif is_yt:
+                if self.is_playlist_url(data):
+                    if progress_callback:
+                        progress_callback(
+                            10,
+                            "Getting playlist...",
+                            "Connecting to YouTube",
+                        )
+                    urls.extend(self._resolve_playlist_urls(config, "YouTube", data))
+                else:
+                    if progress_callback:
+                        progress_callback(
+                            10, "Processing link...", "YouTube URL detected"
+                        )
+                    urls.append(data)
+            elif data:
+                if progress_callback:
+                    progress_callback(
+                        10, "Searching YouTube...", f"Searching: {data[:50]}"
+                    )
+                if config.get("Preferir_YouTube_Music"):
+                    ytm_url, _, _ = self.search_youtube_music(data, data)
+                    if ytm_url:
+                        urls.append(ytm_url)
+                    else:
+                        link = self.search_youtube(data)
+                        if link:
+                            urls.append(link)
+                else:
+                    link = self.search_youtube(data)
+                    if link:
+                        urls.append(link)
+
+            if not urls:
+                if progress_callback:
+                    progress_callback(100, "No results", "No URLs to download found")
+                return None
+
+            if progress_callback:
+                progress_callback(
+                    15, "Starting downloads...", f"{len(urls)} item(s) found"
+                )
+
+            # --- Build task list & run in parallel ---
+            tasks: list[tuple[str, str, dict]] = []
+            for url in urls:
+                if not url:
+                    continue
+                if config.get("Descargar_video"):
+                    tasks.append((url, "video", config))
+                if config.get("Descargar_audio"):
+                    tasks.append((url, "audio", config))
+
+            max_workers = config.get("max_download_workers", self._DEFAULT_MAX_WORKERS)
+
+            start = time.time()
+            self._run_download_tasks(
+                tasks, result, session_dir, cookie_file, max_workers
+            )
+            logger.info(f"Execution time: {time.time() - start:.2f} seconds")
+
+            # If cancellation was requested during task execution, abort early
+            if result.request_id and DownloadProgressStore.is_cancelled(
+                result.request_id
+            ):
+                logger.info("Download cancelled by client - aborting before finalize")
+                if progress_callback:
+                    progress_callback(100, "Cancelled", "Cancelled by client")
+                return None
+
+            if progress_callback:
+                progress_callback(90, "Finishing...", "Processing downloaded files")
+            return self._finalize(
+                result, filename, session_dir, progress_callback, owns_session
+            )
+
+        except Exception as e:
+            logger.error(f"Error in download process: {e}")
+            if progress_callback:
+                progress_callback(100, "Error", str(e)[:100])
+            return None
+        finally:
+            if owns_session:
+                shutil.rmtree(session_dir, ignore_errors=True)
+                logger.debug(f"Session directory cleaned: {session_dir.name}")
+
+    def download_selective(
+        self,
+        config: dict,
+        selected_urls: list[str],
+        filename: str = "archivos.zip",
+        progress_callback: Callable | None = None,
+        base_folder: str | None = None,
+        item_configs: dict | None = None,
+        request_id: str | None = None,
+    ) -> str | None:
+        """Download selected URLs with optional per-item format overrides.
+
+        Same UUID-isolation and cookie semantics as
+        ``download_with_progress``.
+        """
+        item_configs = item_configs or {}
+
+        # --- Session directory & ownership ---
+        if base_folder:
+            session_dir = Path(base_folder)
+            owns_session = False
+        else:
+            session_id = uuid.uuid4().hex
+            session_dir = self._base_dir / "Downloads" / "Temp" / session_id
+            owns_session = True
+
+        try:
+            self._ensure_dir(session_dir)
+
+            # --- Per-session cookie provisioning ---
+            cookie_file = self._setup_cookies(config, session_dir)
+
+            result = _DownloadResult(progress_callback, request_id=request_id)
+
+            if progress_callback:
+                progress_callback(5, "Preparing...", "Analyzing request")
+
+            if not selected_urls:
+                if progress_callback:
+                    progress_callback(100, "No selection", "No URLs selected")
+                return None
+
+            if progress_callback:
+                progress_callback(
+                    15,
+                    "Starting downloads...",
+                    f"{len(selected_urls)} item(s) selected",
+                )
+
+            # --- Build task list with per-item overrides ---
+            tasks: list[tuple[str, str, dict]] = []
+            for url in selected_urls:
+                if not url:
+                    continue
+
+                ic = item_configs.get(url, {})
+                item_fmt = ic.get("format")
+
+                # Build effective config with per-item format override
+                effective_cfg = config.copy()
+                file_fmt = ic.get("fileFormat")
+                if file_fmt:
+                    _AUDIO_EXTS = ("mp3", "m4a", "flac", "wav")
+                    _VIDEO_EXTS = ("mp4", "mkv", "webm", "mov")
+                    if file_fmt in _AUDIO_EXTS:
+                        effective_cfg["Formato_audio"] = file_fmt
+                    elif file_fmt in _VIDEO_EXTS:
+                        effective_cfg["Formato_video"] = file_fmt
+
+                # Determine modes to download
+                modes: list[str] = []
+                if item_fmt:
+                    modes.append(item_fmt)
+                else:
+                    if config.get("Descargar_video"):
+                        modes.append("video")
+                    if config.get("Descargar_audio"):
+                        modes.append("audio")
+
+                for mode in modes:
+                    tasks.append((url, mode, effective_cfg))
+
+            max_workers = config.get("max_download_workers", self._DEFAULT_MAX_WORKERS)
+
+            start = time.time()
+            self._run_download_tasks(
+                tasks, result, session_dir, cookie_file, max_workers
+            )
+            logger.info(f"Execution time: {time.time() - start:.2f} seconds")
+
+            # If cancellation was requested during task execution, abort early
+            if result.request_id and DownloadProgressStore.is_cancelled(
+                result.request_id
+            ):
+                logger.info("Download cancelled by client - aborting before finalize")
+                if progress_callback:
+                    progress_callback(100, "Cancelled", "Cancelled by client")
+                return None
+
+            if progress_callback:
+                progress_callback(90, "Finishing...", "Processing downloaded files")
+            return self._finalize(
+                result, filename, session_dir, progress_callback, owns_session
+            )
+
+        except Exception as e:
+            logger.error(f"Error in selective download: {e}")
+            if progress_callback:
+                progress_callback(100, "Error", str(e)[:100])
+            return None
+        finally:
+            if owns_session:
+                shutil.rmtree(session_dir, ignore_errors=True)
+                logger.debug(f"Session directory cleaned: {session_dir.name}")
+
+    # ------------------------------------------------------------------
+    # Shared helpers for entry points
+    # ------------------------------------------------------------------
+
+    def _finalize(
+        self,
+        result: _DownloadResult,
+        filename: str,
+        session_dir: Path,
+        progress_callback: Callable | None,
+        owns_session: bool = False,
+    ) -> str | None:
+        """Compress (if many files), log summary, return final path.
+
+        When *owns_session* is ``True``, the final deliverable is copied to a
+        permanent output directory **before** the session directory is removed
+        by the caller's ``finally`` block.
+        """
+        files = result.canciones_descargadas
+
+        if len(files) > 1:
+            if progress_callback:
+                progress_callback(92, "Compressing...", "Creating ZIP file")
+            path = self.compress_files(filename, files, str(session_dir))
+        elif len(files) == 1:
+            path = str(Path(files[0]).resolve())
+        else:
+            path = None
+
+        # When we own the session dir, move the deliverable out before cleanup
+        if owns_session and path and Path(path).exists():
+            output_dir = self._ensure_dir(self._base_dir / "Downloads" / "Output")
+            dest = output_dir / Path(path).name
+            # Avoid name collision
+            if dest.exists():
+                stem = dest.stem
+                suffix = dest.suffix
+                dest = output_dir / f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"
+            shutil.copy2(str(path), str(dest))
+            path = str(dest)
+
+        if progress_callback:
+            progress_callback(98, "Done!", "Preparing download")
+
+        self._log_summary(result)
+        logger.info(f"File path: {path}")
+        return path
+
+    @staticmethod
+    def _log_summary(result: _DownloadResult) -> None:
+        a, v = result.audios_exito, result.videos_exito
+        if a and v:
+            logger.info(f"Downloaded {a} audios and {v} videos")
+        elif a:
+            logger.info(f"Downloaded {a} audios")
+        elif v:
+            logger.info(f"Downloaded {v} videos")
+
+    @staticmethod
+    def _parse_duration_str(text: str) -> int:
+        """Parse ``"M:SS"`` or ``"H:MM:SS"`` into total seconds."""
+        if not text:
+            return 0
+        parts = text.split(":")
+        try:
+            if len(parts) == 2:
+                return int(parts[0]) * 60 + int(parts[1])
+            if len(parts) == 3:
+                return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+        except ValueError:
+            pass
+        return 0
 
 
 # ============================================
-# URL Detection Functions
+# RQ Task — standalone picklable function for the worker process
 # ============================================
 
 
-def detectar_fuente_url(url):
-    """Detects the source of a URL (YouTube, Spotify, YouTube Music)."""
-    if not url:
-        return None
-    url_lower = url.lower()
-    if "spotify.com" in url_lower:
-        return "spotify"
-    elif "music.youtube.com" in url_lower:
-        return "youtube_music"
-    elif "youtube.com" in url_lower or "youtu.be" in url_lower:
-        return "youtube"
-    return None
+def execute_download_task(
+    user_config: dict,
+    input_url: str,
+    task_id: str,
+    nombre_archivo: str,
+    temp_dir: str,
+    is_playlist_mode: bool = False,
+    selected_urls: list | None = None,
+    item_configs: dict | None = None,
+    redis_url: str | None = None,
+) -> None:
+    """Top-level task executed by an RQ worker.
+
+    This function is intentionally defined at module level so that it is
+    *picklable* by RQ.  It re-initialises the Redis connection inside the
+    worker process (workers do NOT share memory with the Flask app) and
+    delegates to the :class:`OfflinerCore` singleton for the actual download.
+
+    Args:
+        user_config: Validated user configuration dict.
+        input_url: The URL or search query submitted by the user.
+        task_id: Unique request_id (used as the Redis progress key).
+        nombre_archivo: Desired output filename (ZIP name).
+        temp_dir: Absolute path to the session-scoped temp directory.
+        is_playlist_mode: Whether the request is a playlist selection.
+        selected_urls: List of selected URLs (playlist mode only).
+        item_configs: Per-item format overrides (playlist mode only).
+        redis_url: Redis connection URL so the worker can write progress.
+    """
+    # Ensure the worker process has a valid Redis connection.
+    if redis_url:
+        init_redis(redis_url)
+
+    try:
+
+        def progress_callback(percent: int, status: str, detail: str = "") -> None:
+            DownloadProgressStore.update(
+                task_id,
+                percent=percent,
+                status=status,
+                detail=detail,
+            )
+
+        if is_playlist_mode and selected_urls:
+            result_path = _core.download_selective(
+                user_config,
+                selected_urls,
+                nombre_archivo,
+                progress_callback,
+                base_folder=temp_dir,
+                item_configs=item_configs,
+                request_id=task_id,
+            )
+        else:
+            result_path = _core.download_with_progress(
+                user_config,
+                input_url,
+                nombre_archivo,
+                progress_callback,
+                base_folder=temp_dir,
+                request_id=task_id,
+            )
+
+        if result_path and os.path.exists(result_path):
+            logger.info(f"RQ task {task_id}: download completed → {result_path}")
+            DownloadProgressStore.update(
+                task_id,
+                file_path=result_path,
+                complete=True,
+                percent=100,
+                status="Done!",
+                detail="Ready to download",
+                phase="done",
+                speed="",
+                eta="",
+            )
+        else:
+            if DownloadProgressStore.is_cancelled(task_id):
+                DownloadProgressStore.update(
+                    task_id,
+                    error="Cancelled by client disconnect",
+                    complete=True,
+                    percent=100,
+                    status="Cancelled",
+                    detail="Cancelled by client disconnect",
+                    phase="cancelled",
+                )
+            else:
+                DownloadProgressStore.update(
+                    task_id,
+                    error="Could not download the file.",
+                    complete=True,
+                    percent=100,
+                    status="Error",
+                    phase="error",
+                )
+
+    except Exception as exc:
+        logger.error(f"RQ task {task_id} failed: {exc}")
+        DownloadProgressStore.update(
+            task_id,
+            error=str(exc)[:200],
+            complete=True,
+            percent=100,
+            status="Error",
+            phase="error",
+        )
+
+
+# ============================================
+# Module-level singleton + backward-compatible API
+# ============================================
+#
+# routes.py imports individual names from this module.  The wrappers below
+# delegate to the singleton so that existing call-sites keep working without
+# any changes.
+
+_core = OfflinerCore()
+
+# -- Re-exported constants / objects --
+SPONSORBLOCK_CATEGORIES = OfflinerCore.SPONSORBLOCK_CATEGORIES
+ytmusic = _core.ytmusic
+sp = _core._spotify_default  # noqa: SLF001 — kept for backward compat
+
+
+# -- Thin function wrappers (preserve original signatures) --
+
+
+def obtener_info_playlist(url, config=None):
+    """Backward-compatible wrapper for ``OfflinerCore.get_playlist_info``."""
+    return _core.get_playlist_info(url, config)
 
 
 def es_url_playlist(url):
-    """Checks if a URL is a YouTube, YouTube Music, or Spotify playlist."""
-    if not url:
-        return False
-    url_lower = url.lower()
-
-    playlist_patterns = [
-        "youtube.com/playlist?list=",
-        "youtube.com/watch?v=.*&list=",
-        "youtube.com/watch?.*list=",
-        "music.youtube.com/playlist?list=",
-        "music.youtube.com/watch?v=.*&list=",
-        "youtu.be/.*[?&]list=",
-    ]
-
-    for pattern in playlist_patterns:
-        if pattern.replace(".*", "") in url_lower or (
-            ".*" in pattern and all(part in url_lower for part in pattern.split(".*"))
-        ):
-            return True
-
-    if "spotify.com" in url_lower and (
-        "/playlist/" in url_lower or "/album/" in url_lower
-    ):
-        return True
-
-    return False
+    """Backward-compatible wrapper for ``OfflinerCore.is_playlist_url``."""
+    return OfflinerCore.is_playlist_url(url)
 
 
-def obtener_info_media(url):
-    """Gets basic info from an individual video/track (title, thumbnail, author, duration)."""
-    if not url:
-        return None
-
-    try:
-        url_lower = url.lower()
-        if "spotify.com" in url_lower:
-            return _obtener_info_spotify(url)
-        elif "music.youtube.com" in url_lower:
-            return _obtener_info_youtube(url, fuente="youtube_music")
-        elif "youtube.com" in url_lower or "youtu.be" in url_lower:
-            return _obtener_info_youtube(url, fuente="youtube")
-        else:
-            return _obtener_info_youtube(url, fuente="youtube")
-    except Exception as e:
-        logger.error(f"Error getting media info: {e}")
-        return None
+def obtener_info_media(url, config=None):
+    """Backward-compatible wrapper for ``OfflinerCore.get_media_info``."""
+    return _core.get_media_info(url, config)
 
 
-def _obtener_info_youtube(url, fuente="youtube"):
-    """Gets info from YouTube/YouTube Music using yt-dlp."""
-    try:
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "extract_flat": False,
-            "skip_download": True,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            if not info:
-                return None
-
-            duracion_segundos = info.get("duration", 0) or 0
-            if duracion_segundos:
-                minutos = duracion_segundos // 60
-                segundos = duracion_segundos % 60
-                duracion = f"{minutos}:{segundos:02d}"
-            else:
-                duracion = "0:00"
-
-            thumbnails = info.get("thumbnails", [])
-            thumbnail = ""
-            if thumbnails:
-                for t in reversed(thumbnails):
-                    if t.get("url"):
-                        thumbnail = t["url"]
-                        break
-            if not thumbnail:
-                thumbnail = info.get("thumbnail", "")
-
-            return {
-                "titulo": info.get("title", "Sin título"),
-                "thumbnail": thumbnail,
-                "autor": info.get("uploader", info.get("channel", "Desconocido")),
-                "duracion": duracion,
-                "duracion_segundos": duracion_segundos,
-                "fuente": fuente,
-            }
-    except Exception as e:
-        logger.error(f"Error getting YouTube info: {e}")
-        return None
+def detectar_fuente_url(url):
+    """Backward-compatible wrapper for ``OfflinerCore.detect_url_source``."""
+    return OfflinerCore.detect_url_source(url)
 
 
-def _obtener_info_spotify(url):
-    """Gets info from Spotify using spotipy."""
-    global sp
-    if not sp:
-        logger.warning("Spotify not configured")
-        return None
-
-    try:
-        if "/track/" in url:
-            track_id = url.split("/track/")[1].split("?")[0].split("/")[0]
-            track = sp.track(track_id)
-            if not track:
-                return None
-
-            artistas = [a["name"] for a in track.get("artists", [])]
-            autor = ", ".join(artistas) if artistas else "Desconocido"
-            images = track.get("album", {}).get("images", [])
-            thumbnail = images[0]["url"] if images else ""
-
-            duracion_ms = track.get("duration_ms", 0)
-            duracion_segundos = duracion_ms // 1000
-            minutos = duracion_segundos // 60
-            segundos = duracion_segundos % 60
-            duracion = f"{minutos}:{segundos:02d}"
-
-            return {
-                "titulo": track.get("name", "Sin título"),
-                "thumbnail": thumbnail,
-                "autor": autor,
-                "duracion": duracion,
-                "duracion_segundos": duracion_segundos,
-                "fuente": "spotify",
-            }
-        elif "/album/" in url:
-            album_id = url.split("/album/")[1].split("?")[0].split("/")[0]
-            album = sp.album(album_id)
-            if not album:
-                return None
-
-            artistas = [a["name"] for a in album.get("artists", [])]
-            autor = ", ".join(artistas) if artistas else "Desconocido"
-            images = album.get("images", [])
-            thumbnail = images[0]["url"] if images else ""
-            total_tracks = album.get("total_tracks", 0)
-
-            return {
-                "titulo": album.get("name", "Sin título"),
-                "thumbnail": thumbnail,
-                "autor": autor,
-                "duracion": f"{total_tracks} tracks",
-                "duracion_segundos": 0,
-                "fuente": "spotify",
-                "es_playlist": True,
-            }
-        else:
-            return None
-    except Exception as e:
-        logger.error(f"Error getting Spotify info: {e}")
-        return None
+def extraer_video_id_youtube(url):
+    """Backward-compatible wrapper for ``OfflinerCore.extract_youtube_video_id``."""
+    return OfflinerCore.extract_youtube_video_id(url)
 
 
-# ============================================
-# Main Download Entry Points
-# ============================================
+def obtener_segmentos_sponsorblock(video_id, categories=None):
+    """Backward-compatible wrapper for ``OfflinerCore.get_sponsorblock_segments``."""
+    return _core.get_sponsorblock_segments(video_id, categories)
 
 
 def iniciar_con_progreso(
@@ -2374,189 +2447,17 @@ def iniciar_con_progreso(
     nombre_archivo_final="archivos.zip",
     progress_callback=None,
     base_folder=None,
+    request_id=None,
 ):
-    """
-    Main function to start the download process with progress support.
-    Auto-detects if it's a playlist, individual URL, or search query.
-    """
-    result = DownloadResult(progress_callback)
-
-    if not base_folder:
-        crear_carpeta(os.path.join(SCRIPT_DIR, "Downloads", "Audio"))
-        crear_carpeta(os.path.join(SCRIPT_DIR, "Downloads", "Video"))
-    else:
-        crear_carpeta(base_folder)
-
-    urls = []
-
-    try:
-        if progress_callback:
-            progress_callback(5, "Preparing...", "Analyzing request")
-
-        fuente = config.get("Fuente_descarga", "YouTube")
-
-        if fuente == "YouTube":
-            dato_lower = dato.lower() if dato else ""
-            es_url_youtube = any(
-                p in dato_lower
-                for p in ["youtube.com", "youtu.be", "music.youtube.com"]
-            )
-
-            if es_url_youtube:
-                if es_url_playlist(dato):
-                    if progress_callback:
-                        progress_callback(
-                            10, "Getting playlist...", "Connecting to YouTube"
-                        )
-                    urls.extend(obtener_playlist(config, "YouTube", dato))
-                else:
-                    if progress_callback:
-                        progress_callback(
-                            10, "Processing link...", "YouTube URL detected"
-                        )
-                    urls.append(dato)
-            else:
-                if dato:
-                    if progress_callback:
-                        progress_callback(
-                            10, "Searching YouTube...", f"Searching: {dato[:50]}"
-                        )
-                    if config.get("Preferir_YouTube_Music"):
-                        url_ytmusic, titulo, artista = buscar_en_youtube_music(
-                            dato, dato
-                        )
-                        if url_ytmusic:
-                            urls.append(url_ytmusic)
-                        else:
-                            link_youtube = buscar_cancion_youtube(dato)
-                            if link_youtube:
-                                urls.append(link_youtube)
-                    else:
-                        link_youtube = buscar_cancion_youtube(dato)
-                        if link_youtube:
-                            urls.append(link_youtube)
-
-        elif fuente == "Spotify":
-            if dato:
-                dato_lower = dato.lower()
-                es_url_spotify = (
-                    "spotify.com" in dato_lower or "open.spotify" in dato_lower
-                )
-
-                if es_url_spotify:
-                    if "playlist" in dato_lower:
-                        if progress_callback:
-                            progress_callback(
-                                10, "Getting playlist...", "Connecting to Spotify"
-                            )
-                        urls.extend(obtener_playlist(config, "Spotify", dato))
-                    elif "album" in dato_lower:
-                        if progress_callback:
-                            progress_callback(
-                                10, "Getting album...", "Connecting to Spotify"
-                            )
-                        urls.extend(obtener_playlist(config, "Spotify", dato))
-                    else:
-                        if progress_callback:
-                            progress_callback(
-                                10, "Getting song...", "Searching on Spotify"
-                            )
-                        url_spotify = obtener_cancion_Spotify(config, dato)
-                        if url_spotify:
-                            urls.append(url_spotify)
-                else:
-                    if progress_callback:
-                        progress_callback(
-                            10, "Searching Spotify...", f"Searching: {dato[:50]}"
-                        )
-                    link_youtube = buscar_cancion_youtube(dato)
-                    if link_youtube:
-                        urls.append(link_youtube)
-
-        if not urls:
-            if progress_callback:
-                progress_callback(100, "No results", "No URLs to download found")
-            return None
-
-        total_downloads = 0
-        if config.get("Descargar_video"):
-            total_downloads += len(urls)
-        if config.get("Descargar_audio"):
-            total_downloads += len(urls)
-        result.total_items = max(total_downloads, 1)
-
-        if progress_callback:
-            progress_callback(15, "Starting downloads...", f"{len(urls)} item(s) found")
-
-        inicio = time.time()
-
-        for i, url in enumerate(urls):
-            if not url:
-                continue
-            if config.get("Descargar_video"):
-                if progress_callback:
-                    percent = 15 + int(
-                        (result.completed_items / result.total_items) * 70
-                    )
-                    progress_callback(
-                        percent, "Downloading video...", f"Item {i+1} of {len(urls)}"
-                    )
-                _descargar_video_interno(config, url, result, base_folder)
-                result.completed_items += 1
-
-            if config.get("Descargar_audio"):
-                if progress_callback:
-                    percent = 15 + int(
-                        (result.completed_items / result.total_items) * 70
-                    )
-                    progress_callback(
-                        percent, "Downloading audio...", f"Item {i+1} of {len(urls)}"
-                    )
-                _descargar_audio_interno(config, url, result, base_folder)
-                result.completed_items += 1
-
-        fin = time.time()
-        logger.info(f"Execution time: {fin - inicio:.2f} seconds")
-
-        if progress_callback:
-            progress_callback(90, "Finishing...", "Processing downloaded files")
-
-        if len(result.canciones_descargadas) > 1:
-            if progress_callback:
-                progress_callback(92, "Compressing...", "Creating ZIP file")
-            output_folder = (
-                base_folder
-                if base_folder
-                else os.path.join(SCRIPT_DIR, "Downloads", "Zip")
-            )
-            ruta_descarga = comprimir_y_mover_archivos(
-                nombre_archivo_final, result.canciones_descargadas, output_folder
-            )
-        elif len(result.canciones_descargadas) == 1:
-            ruta_descarga = os.path.abspath(result.canciones_descargadas[0])
-        else:
-            ruta_descarga = None
-
-        if progress_callback:
-            progress_callback(98, "Done!", "Preparing download")
-
-        if result.audios_exito >= 1 and result.videos_exito >= 1:
-            logger.info(
-                f"Downloaded {result.audios_exito} audios and {result.videos_exito} videos"
-            )
-        elif result.audios_exito >= 1:
-            logger.info(f"Downloaded {result.audios_exito} audios")
-        elif result.videos_exito >= 1:
-            logger.info(f"Downloaded {result.videos_exito} videos")
-
-        logger.info(f"File path: {ruta_descarga}")
-        return ruta_descarga
-
-    except Exception as e:
-        logger.error(f"Error in download process: {e}")
-        if progress_callback:
-            progress_callback(100, "Error", str(e)[:100])
-        return None
+    """Backward-compatible wrapper for ``OfflinerCore.download_with_progress``."""
+    return _core.download_with_progress(
+        config,
+        dato,
+        nombre_archivo_final,
+        progress_callback,
+        base_folder,
+        request_id=request_id,
+    )
 
 
 def iniciar_descarga_selectiva(
@@ -2566,154 +2467,37 @@ def iniciar_descarga_selectiva(
     progress_callback=None,
     base_folder=None,
     item_configs=None,
+    request_id=None,
 ):
-    """
-    Starts download of selected URLs from a playlist.
+    """Backward-compatible wrapper for ``OfflinerCore.download_selective``."""
+    return _core.download_selective(
+        config,
+        urls_seleccionadas,
+        nombre_archivo_final,
+        progress_callback,
+        base_folder,
+        item_configs,
+        request_id=request_id,
+    )
 
-    Args:
-        config: Global configuration
-        urls_seleccionadas: List of URLs to download
-        nombre_archivo_final: Name of the final ZIP file
-        progress_callback: Callback function for progress updates
-        base_folder: Base folder for downloads
-        item_configs: Dictionary mapping URLs to individual configurations
-                     Format: {url: {'format': 'audio'|'video'}}
-    """
-    result = DownloadResult(progress_callback)
 
-    if item_configs is None:
-        item_configs = {}
+def buscar_cancion_youtube(query):
+    """Backward-compatible wrapper for ``OfflinerCore.search_youtube``."""
+    return _core.search_youtube(query)
 
-    if not base_folder:
-        crear_carpeta(os.path.join(SCRIPT_DIR, "Downloads", "Audio"))
-        crear_carpeta(os.path.join(SCRIPT_DIR, "Downloads", "Video"))
-    else:
-        crear_carpeta(base_folder)
 
-    try:
-        if progress_callback:
-            progress_callback(5, "Preparing...", "Analyzing request")
+def buscar_en_youtube_music(titulo_video, artista=None):
+    """Backward-compatible wrapper for ``OfflinerCore.search_youtube_music``."""
+    return _core.search_youtube_music(titulo_video, artista)
 
-        if not urls_seleccionadas:
-            if progress_callback:
-                progress_callback(100, "No selection", "No URLs selected")
-            return None
 
-        # Count total downloads considering individual configs
-        total_downloads = 0
-        for url in urls_seleccionadas:
-            item_config = item_configs.get(url, {})
-            item_format = item_config.get("format", None)
+def obtener_cancion_Spotify(config, link_spotify):
+    """Backward-compatible wrapper for ``OfflinerCore._resolve_spotify_track``."""
+    return _core._resolve_spotify_track(config, link_spotify)  # noqa: SLF001
 
-            if item_format == "video":
-                total_downloads += 1
-            elif item_format == "audio":
-                total_downloads += 1
-            else:
-                # Use global config
-                if config.get("Descargar_video"):
-                    total_downloads += 1
-                if config.get("Descargar_audio"):
-                    total_downloads += 1
 
-        result.total_items = max(total_downloads, 1)
-
-        if progress_callback:
-            progress_callback(
-                15,
-                "Starting downloads...",
-                f"{len(urls_seleccionadas)} item(s) selected",
-            )
-
-        inicio = time.time()
-
-        for i, url in enumerate(urls_seleccionadas):
-            if not url:
-                continue
-
-            # Get individual item config
-            item_config = item_configs.get(url, {})
-            item_format = item_config.get("format", None)
-
-            # Determine what to download for this item
-            download_video = (
-                item_format == "video" if item_format else config.get("Descargar_video")
-            )
-            download_audio = (
-                item_format == "audio" if item_format else config.get("Descargar_audio")
-            )
-
-            # Build per-item config with file format override
-            effective_config = config.copy()
-            item_file_format = item_config.get("fileFormat", None)
-            if item_file_format:
-                audio_formats = ["mp3", "m4a", "flac", "wav"]
-                video_formats = ["mp4", "mkv", "webm", "mov"]
-                if item_file_format in audio_formats:
-                    effective_config["Formato_audio"] = item_file_format
-                elif item_file_format in video_formats:
-                    effective_config["Formato_video"] = item_file_format
-
-            if download_video:
-                if progress_callback:
-                    percent = 15 + int(
-                        (result.completed_items / result.total_items) * 70
-                    )
-                    progress_callback(
-                        percent,
-                        "Downloading video...",
-                        f"Item {i+1} of {len(urls_seleccionadas)}",
-                    )
-                _descargar_video_interno(effective_config, url, result, base_folder)
-                result.completed_items += 1
-
-            if download_audio:
-                if progress_callback:
-                    percent = 15 + int(
-                        (result.completed_items / result.total_items) * 70
-                    )
-                    progress_callback(
-                        percent,
-                        "Downloading audio...",
-                        f"Item {i+1} of {len(urls_seleccionadas)}",
-                    )
-                _descargar_audio_interno(effective_config, url, result, base_folder)
-                result.completed_items += 1
-
-        fin = time.time()
-        logger.info(f"Execution time: {fin - inicio:.2f} seconds")
-
-        if progress_callback:
-            progress_callback(90, "Finishing...", "Processing downloaded files")
-
-        if len(result.canciones_descargadas) > 1:
-            if progress_callback:
-                progress_callback(92, "Compressing...", "Creating ZIP file")
-            ruta_descarga = comprimir_y_mover_archivos(
-                nombre_archivo_final, result.canciones_descargadas, base_folder
-            )
-        elif len(result.canciones_descargadas) == 1:
-            ruta_descarga = os.path.abspath(result.canciones_descargadas[0])
-        else:
-            ruta_descarga = None
-
-        if progress_callback:
-            progress_callback(98, "Done!", "Preparing download")
-
-        if result.audios_exito >= 1 and result.videos_exito >= 1:
-            logger.info(
-                f"Downloaded {result.audios_exito} audios and {result.videos_exito} videos"
-            )
-        elif result.audios_exito >= 1:
-            logger.info(f"Downloaded {result.audios_exito} audios")
-        elif result.videos_exito >= 1:
-            logger.info(f"Downloaded {result.videos_exito} videos")
-
-        logger.info(f"File path(s): {ruta_descarga}")
-        return ruta_descarga
-
-    except Exception as e:
-        logger.error(f"Error in selective download: {e}")
-        if progress_callback:
-            progress_callback(100, "Error", str(e)[:100])
-        return None
+def obtener_playlist(config, plataforma, playlist_url):
+    """Backward-compatible wrapper for ``OfflinerCore._resolve_playlist_urls``."""
+    return _core._resolve_playlist_urls(
+        config, plataforma, playlist_url
+    )  # noqa: SLF001

@@ -14,7 +14,7 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
 from config import config
-from routes import register_routes, register_error_handlers
+from routes import register_routes, register_error_handlers, init_rq
 
 # Base directory
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -54,6 +54,19 @@ def create_app(config_name="development"):
         ],
         storage_uri="memory://",
     )
+
+    # Initialise Redis connection and RQ task queue.
+    # The same REDIS_URL is shared by the progress store in logic.py and the
+    # RQ queue in routes.py so that the Flask app and the RQ worker both
+    # read/write progress via the same Redis instance.
+    redis_url = app.config.get("REDIS_URL", "redis://localhost:6379/0")
+
+    from logic import init_redis as _init_logic_redis
+
+    _init_logic_redis(redis_url)
+    init_rq(redis_url)
+
+    app.logger.info(f"Redis & RQ initialised ({redis_url})")
 
     # Register routes
     register_routes(app, limiter)
@@ -149,5 +162,14 @@ app = create_app(os.getenv("FLASK_ENV", "development"))
 
 
 if __name__ == "__main__":
+    from services import ensure_services
+
+    # Start Redis server and RQ worker before accepting requests.
+    # In debug mode with the reloader, only the *parent* process starts
+    # services; the reloader children skip this to avoid duplicate processes.
+    if os.environ.get("WERKZEUG_RUN_MAIN") != "true":
+        redis_url = app.config.get("REDIS_URL", "redis://localhost:6379/0")
+        ensure_services(redis_url)
+
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
