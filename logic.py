@@ -34,13 +34,8 @@ import yt_dlp
 from spotipy.oauth2 import SpotifyClientCredentials
 from ytmusicapi import YTMusic
 
-# Proxy configuration for yt-dlp and requests (optional, set PROXY_URL env var)
-_proxy_url = os.getenv("PROXY_URL")
-if _proxy_url:
-    os.environ["http_proxy"] = _proxy_url
-    os.environ["https_proxy"] = _proxy_url
-    os.environ["HTTP_PROXY"] = _proxy_url
-    os.environ["HTTPS_PROXY"] = _proxy_url
+# Proxy configuration is handled by the ProxyRotator class (see below).
+# Set PROXY_URL to one or more comma-separated proxy URLs.
 
 # Optional: rapidfuzz for faster fuzzy matching
 try:
@@ -53,6 +48,130 @@ except ImportError:
     _RAPIDFUZZ_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================
+# Custom exceptions
+# ============================================
+
+
+class _ProxyBlockedError(Exception):
+    """Raised when a download fails due to a blocked / non-working proxy."""
+
+
+# ============================================
+# Thread-safe proxy rotator
+# ============================================
+
+
+class ProxyRotator:
+    """Thread-safe rotating proxy manager.
+
+    Parses the ``PROXY_URL`` environment variable (one or more proxy URLs
+    separated by commas) and exposes a ``current`` property plus a ``rotate``
+    method that advances to the next proxy in the list.
+
+    When a proxy is detected as blocked by YouTube (or otherwise unusable),
+    callers invoke ``rotate()`` and retry the operation transparently.
+    """
+
+    _PROXY_ERROR_PATTERNS: list[str] = [
+        r"Sign in to confirm",
+        r"HTTP Error 403",
+        r"HTTP Error 429",
+        r"blocked",
+        r"proxy.*error",
+        r"Unable to download webpage",
+        r"urlopen error",
+        r"Connection refused",
+        r"Connection reset",
+        r"Tunnel connection failed",
+        r"ProxyError",
+        r"ConnectTimeoutError",
+        r"SOCKSHTTPSConnectionPool",
+        r"Read timed out",
+        r"IncompleteRead",
+        r"RemoteDisconnected",
+        r"No such file or directory.*cookie",
+    ]
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        raw = os.getenv("PROXY_URL", "")
+        self._proxies: list[str] = [p.strip() for p in raw.split(",") if p.strip()]
+        self._current_index: int = 0
+        self._apply_env_vars()
+        if self._proxies:
+            logger.info(
+                f"ProxyRotator initialised with {len(self._proxies)} proxy(ies). "
+                f"Active: {self._proxies[0]}"
+            )
+        else:
+            logger.info("ProxyRotator: no proxies configured")
+
+    # -- Public API --
+
+    @property
+    def current(self) -> str | None:
+        """Return the currently active proxy URL, or *None* if none configured."""
+        with self._lock:
+            if not self._proxies:
+                return None
+            return self._proxies[self._current_index]
+
+    @property
+    def count(self) -> int:
+        """Number of configured proxies."""
+        return len(self._proxies)
+
+    def rotate(self) -> str | None:
+        """Advance to the next proxy in the list and return it.
+
+        Wraps around to the first proxy after the last one.
+        Thread-safe.
+        """
+        with self._lock:
+            if not self._proxies:
+                return None
+            old_idx = self._current_index
+            self._current_index = (self._current_index + 1) % len(self._proxies)
+            new_proxy = self._proxies[self._current_index]
+            self._apply_env_vars_unlocked()
+            logger.warning(
+                f"ProxyRotator: rotating from proxy #{old_idx} "
+                f"to #{self._current_index} → {new_proxy}"
+            )
+            return new_proxy
+
+    def is_proxy_error(self, error: BaseException) -> bool:
+        """Return *True* when *error* looks like a proxy / IP-block issue."""
+        msg = str(error)
+        for pattern in self._PROXY_ERROR_PATTERNS:
+            if re.search(pattern, msg, re.IGNORECASE):
+                return True
+        return False
+
+    # -- Internal helpers --
+
+    def _apply_env_vars(self) -> None:
+        with self._lock:
+            self._apply_env_vars_unlocked()
+
+    def _apply_env_vars_unlocked(self) -> None:
+        """Set ``http_proxy`` / ``https_proxy`` env vars.  Caller must hold *_lock*."""
+        if self._proxies:
+            url = self._proxies[self._current_index]
+            os.environ["http_proxy"] = url
+            os.environ["https_proxy"] = url
+            os.environ["HTTP_PROXY"] = url
+            os.environ["HTTPS_PROXY"] = url
+        else:
+            for key in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
+                os.environ.pop(key, None)
+
+
+# Module-level singleton created at import time.
+_proxy_rotator = ProxyRotator()
 
 
 # ============================================
@@ -545,8 +664,8 @@ class OfflinerCore:
             "encoding": "utf-8",
         }
 
-        # Proxy configuration for yt-dlp (optional, set PROXY_URL env var)
-        proxy = os.getenv("PROXY_URL")
+        # Proxy configuration via the global rotating proxy manager.
+        proxy = _proxy_rotator.current
         if proxy:
             opts["proxy"] = proxy
 
@@ -743,25 +862,34 @@ class OfflinerCore:
         return result
 
     def _search_youtube_impl(self, query: str) -> str:
-        """Actual YouTube search via yt-dlp (uncached)."""
-        try:
-            logger.info(f"Searching YouTube: {query}")
-            opts = self._base_ytdlp_opts()
-            opts.update({"extract_flat": True, "default_search": "ytsearch1"})
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(f"ytsearch1:{query}", download=False)
-                if info and info.get("entries"):
-                    entry = info["entries"][0]
-                    vid = (entry.get("id") or "") if entry else ""
-                    if vid:
-                        link = f"https://www.youtube.com/watch?v={vid}"
-                        logger.info(f"Video found: {link}")
-                        return link
-            logger.warning(f"No results for: {query}")
-            return ""
-        except Exception as e:
-            logger.error(f"Error searching YouTube: {e}")
-            return ""
+        """Actual YouTube search via yt-dlp (uncached), with proxy rotation."""
+        max_attempts = max(_proxy_rotator.count, 1)
+        for attempt in range(max_attempts):
+            try:
+                logger.info(f"Searching YouTube: {query}")
+                opts = self._base_ytdlp_opts()
+                opts.update({"extract_flat": True, "default_search": "ytsearch1"})
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+                    if info and info.get("entries"):
+                        entry = info["entries"][0]
+                        vid = (entry.get("id") or "") if entry else ""
+                        if vid:
+                            link = f"https://www.youtube.com/watch?v={vid}"
+                            logger.info(f"Video found: {link}")
+                            return link
+                logger.warning(f"No results for: {query}")
+                return ""
+            except Exception as e:
+                if (
+                    _proxy_rotator.count > 1
+                    and _proxy_rotator.is_proxy_error(e)
+                    and attempt < max_attempts - 1
+                ):
+                    _proxy_rotator.rotate()
+                    continue
+                logger.error(f"Error searching YouTube: {e}")
+                return ""
 
     def search_youtube_music(
         self, title: str, artist: str | None = None
@@ -867,45 +995,57 @@ class OfflinerCore:
     def _get_youtube_info(
         self, url: str, source: str = "youtube", cookie_file: Path | None = None
     ) -> dict | None:
-        try:
-            opts = self._base_ytdlp_opts(cookie_file)
-            if cookie_file:
-                # For metadata probes with authenticated cookies, let yt-dlp
-                # auto-select the client surface; forcing a specific client can
-                # return 400/sign-in errors in some accounts.
-                opts.pop("extractor_args", None)
-            opts.update(
-                {
-                    "extract_flat": False,
-                    "skip_download": True,
-                    # Probing metadata should not fail just because a selected
-                    # format is unavailable for the current auth context.
-                    "check_formats": None,
-                }
-            )
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                if not info:
-                    return None
-                dur_s = info.get("duration", 0) or 0
-                dur_str = f"{dur_s // 60}:{dur_s % 60:02d}" if dur_s else "0:00"
-                thumb = ""
-                for t in reversed(info.get("thumbnails", [])):
-                    if t.get("url"):
-                        thumb = t["url"]
-                        break
-                thumb = thumb or info.get("thumbnail", "")
-                return {
-                    "titulo": info.get("title", "Sin título"),
-                    "thumbnail": thumb,
-                    "autor": info.get("uploader", info.get("channel", "Desconocido")),
-                    "duracion": dur_str,
-                    "duracion_segundos": dur_s,
-                    "fuente": source,
-                }
-        except Exception as e:
-            logger.error(f"Error getting YouTube info: {e}")
-            return None
+        max_attempts = max(_proxy_rotator.count, 1)
+        for attempt in range(max_attempts):
+            try:
+                opts = self._base_ytdlp_opts(cookie_file)
+                if cookie_file:
+                    # For metadata probes with authenticated cookies, let yt-dlp
+                    # auto-select the client surface; forcing a specific client can
+                    # return 400/sign-in errors in some accounts.
+                    opts.pop("extractor_args", None)
+                opts.update(
+                    {
+                        "extract_flat": False,
+                        "skip_download": True,
+                        # Probing metadata should not fail just because a selected
+                        # format is unavailable for the current auth context.
+                        "check_formats": None,
+                    }
+                )
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    if not info:
+                        return None
+                    dur_s = info.get("duration", 0) or 0
+                    dur_str = f"{dur_s // 60}:{dur_s % 60:02d}" if dur_s else "0:00"
+                    thumb = ""
+                    for t in reversed(info.get("thumbnails", [])):
+                        if t.get("url"):
+                            thumb = t["url"]
+                            break
+                    thumb = thumb or info.get("thumbnail", "")
+                    return {
+                        "titulo": info.get("title", "Sin título"),
+                        "thumbnail": thumb,
+                        "autor": info.get(
+                            "uploader", info.get("channel", "Desconocido")
+                        ),
+                        "duracion": dur_str,
+                        "duracion_segundos": dur_s,
+                        "fuente": source,
+                    }
+            except Exception as e:
+                if (
+                    _proxy_rotator.count > 1
+                    and _proxy_rotator.is_proxy_error(e)
+                    and attempt < max_attempts - 1
+                ):
+                    _proxy_rotator.rotate()
+                    continue
+                logger.error(f"Error getting YouTube info: {e}")
+                return None
+        return None
 
     def _get_spotify_info(self, url: str) -> dict | None:
         client = self._get_spotify_client({})
@@ -1232,6 +1372,28 @@ class OfflinerCore:
         cookie_file: Path | None = None,
         max_items: int | None = None,
     ) -> dict | None:
+        max_proxy_attempts = max(_proxy_rotator.count, 1)
+        for _proxy_attempt in range(max_proxy_attempts):
+            try:
+                return self._ytdlp_playlist_info_inner(url, cookie_file, max_items)
+            except Exception as e:
+                if (
+                    _proxy_rotator.count > 1
+                    and _proxy_rotator.is_proxy_error(e)
+                    and _proxy_attempt < max_proxy_attempts - 1
+                ):
+                    _proxy_rotator.rotate()
+                    continue
+                logger.error(f"Error in yt-dlp playlist info: {e}")
+                return None
+        return None
+
+    def _ytdlp_playlist_info_inner(
+        self,
+        url: str,
+        cookie_file: Path | None = None,
+        max_items: int | None = None,
+    ) -> dict | None:
         opts = self._base_ytdlp_opts(cookie_file)
         if cookie_file:
             opts.pop("extractor_args", None)
@@ -1313,12 +1475,27 @@ class OfflinerCore:
             urls: list[str] = []
 
             if platform == "YouTube":
-                opts = self._base_ytdlp_opts()
-                opts.update({"extract_flat": True, "force_generic_extractor": True})
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    result = ydl.extract_info(url, download=False)
-                    if result and "entries" in result:
-                        urls = [e["url"] for e in result["entries"]]
+                max_proxy_attempts = max(_proxy_rotator.count, 1)
+                for _pa in range(max_proxy_attempts):
+                    try:
+                        opts = self._base_ytdlp_opts()
+                        opts.update(
+                            {"extract_flat": True, "force_generic_extractor": True}
+                        )
+                        with yt_dlp.YoutubeDL(opts) as ydl:
+                            result = ydl.extract_info(url, download=False)
+                            if result and "entries" in result:
+                                urls = [e["url"] for e in result["entries"]]
+                        break
+                    except Exception as _pe:
+                        if (
+                            _proxy_rotator.count > 1
+                            and _proxy_rotator.is_proxy_error(_pe)
+                            and _pa < max_proxy_attempts - 1
+                        ):
+                            _proxy_rotator.rotate()
+                            continue
+                        raise
 
             elif platform == "Spotify":
                 client = self._get_spotify_client(config)
@@ -1821,6 +1998,10 @@ class OfflinerCore:
                 result.inc_error(format_mode)
 
         except Exception as e:
+            # If the error looks proxy-related and we have multiple proxies,
+            # signal the caller to rotate and retry.
+            if _proxy_rotator.count > 1 and _proxy_rotator.is_proxy_error(e):
+                raise _ProxyBlockedError(str(e)) from e
             logger.error(f"Error downloading {format_mode}: {e}")
             result.inc_error(format_mode)
 
@@ -1939,7 +2120,32 @@ class OfflinerCore:
                 logger.info(f"Skipping task due to cancellation: {url}")
                 return
 
-            self._download_media(url, mode, cfg, result, session_dir, cookie_file)
+            # Attempt download with automatic proxy rotation on failure.
+            max_proxy_attempts = max(_proxy_rotator.count, 1)
+            for _proxy_attempt in range(max_proxy_attempts):
+                try:
+                    self._download_media(
+                        url, mode, cfg, result, session_dir, cookie_file
+                    )
+                    break  # success (or handled error inside _download_media)
+                except _ProxyBlockedError as proxy_err:
+                    if _proxy_attempt < max_proxy_attempts - 1:
+                        new_proxy = _proxy_rotator.rotate()
+                        logger.warning(
+                            f"Proxy blocked for '{url}', rotating to "
+                            f"{new_proxy} (attempt "
+                            f"{_proxy_attempt + 2}/{max_proxy_attempts})"
+                        )
+                        if result.request_id:
+                            DownloadProgressStore.update(
+                                result.request_id,
+                                detail="Proxy blocked, switching to next proxy…",
+                            )
+                        continue
+                    # All proxies exhausted
+                    logger.error(f"All proxies exhausted for '{url}': {proxy_err}")
+                    result.inc_error(mode)
+
             result.inc_completed()
             if result.request_id:
                 DownloadProgressStore.update(
