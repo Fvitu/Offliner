@@ -117,7 +117,13 @@ class DownloadTracker:
                 if entry["timestamp"] > one_day_ago
             ]
 
-    def check_limits(self, ip, duration_seconds=0):
+    def check_limits(
+        self,
+        ip,
+        duration_seconds=0,
+        check_content_duration=True,
+        requested_item_count=1,
+    ):
         """
         Checks if the user has exceeded download limits.
 
@@ -151,7 +157,10 @@ class DownloadTracker:
 
             # Check content duration limit
             duration_minutes = duration_seconds / 60
-            if duration_minutes > app_config.MAX_CONTENT_DURATION:
+            if (
+                check_content_duration
+                and duration_minutes > app_config.MAX_CONTENT_DURATION
+            ):
                 return {
                     "allowed": False,
                     "reason": f"content_duration_exceeded",
@@ -159,21 +168,25 @@ class DownloadTracker:
                     "requested": int(duration_minutes),
                 }
 
-            # Check hourly download count
-            if hourly_count >= app_config.MAX_DOWNLOADS_PER_HOUR:
+            safe_requested_count = max(1, int(requested_item_count or 1))
+
+            # Check hourly download count (including current request)
+            if hourly_count + safe_requested_count > app_config.MAX_DOWNLOADS_PER_HOUR:
                 return {
                     "allowed": False,
                     "reason": "hourly_downloads_exceeded",
                     "current": hourly_count,
+                    "requested": safe_requested_count,
                     "max_allowed": app_config.MAX_DOWNLOADS_PER_HOUR,
                 }
 
-            # Check daily download count
-            if daily_count >= app_config.MAX_DOWNLOADS_PER_DAY:
+            # Check daily download count (including current request)
+            if daily_count + safe_requested_count > app_config.MAX_DOWNLOADS_PER_DAY:
                 return {
                     "allowed": False,
                     "reason": "daily_downloads_exceeded",
                     "current": daily_count,
+                    "requested": safe_requested_count,
                     "max_allowed": app_config.MAX_DOWNLOADS_PER_DAY,
                 }
 
@@ -223,10 +236,12 @@ class DownloadTracker:
                 self._downloads[ip] = {"hourly": [], "daily": []}
 
             now = datetime.utcnow()
-            entry = {"timestamp": now, "duration": duration_seconds}
+            safe_item_count = max(1, int(item_count or 1))
+            per_item_duration = duration_seconds / safe_item_count
+            entry = {"timestamp": now, "duration": per_item_duration}
 
             # Record for both hourly and daily tracking
-            for _ in range(item_count):
+            for _ in range(safe_item_count):
                 self._downloads[ip]["hourly"].append(entry.copy())
                 self._downloads[ip]["daily"].append(entry.copy())
 
@@ -235,6 +250,93 @@ class DownloadTracker:
 
 # Global download tracker instance
 download_tracker = DownloadTracker()
+
+
+def _is_api_request() -> bool:
+    """Return True when the current request targets an API/AJAX endpoint."""
+    api_endpoints = {
+        "get_default_config",
+        "playlist_info",
+        "verificar_playlist",
+        "search_youtube",
+        "media_info",
+        "sponsorblock_info",
+        "descargar",
+    }
+    return request.endpoint in api_endpoints
+
+
+def _rate_limit_error_payload(error) -> dict:
+    """Build a compact payload with a specific message key per limited endpoint."""
+    endpoint_to_limit = {
+        "search_youtube": ("search", "toast.rateLimitSearchExceeded"),
+        "playlist_info": ("playlist", "toast.rateLimitPlaylistExceeded"),
+        "verificar_playlist": ("media_info", "toast.rateLimitMediaInfoExceeded"),
+        "media_info": ("media_info", "toast.rateLimitMediaInfoExceeded"),
+        "sponsorblock_info": ("media_info", "toast.rateLimitMediaInfoExceeded"),
+        "descargar": ("download", "toast.rateLimitDownloadExceeded"),
+    }
+
+    limit_type, error_key = endpoint_to_limit.get(
+        request.endpoint,
+        ("general", "toast.rateLimitGeneralExceeded"),
+    )
+
+    payload = {
+        "error": "rate_limit_exceeded",
+        "error_key": error_key,
+        "limit_type": limit_type,
+        "status_code": 429,
+    }
+
+    retry_after = getattr(error, "retry_after", None)
+    if retry_after is not None:
+        payload["retry_after"] = retry_after
+
+    limit_info = getattr(error, "description", None)
+    if limit_info:
+        payload["limit"] = str(limit_info)
+
+    return payload
+
+
+def _parse_duration_seconds(value) -> int:
+    """Best-effort conversion of duration values to seconds."""
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return 0
+
+        if text.isdigit():
+            return max(0, int(text))
+
+        parts = text.split(":")
+        try:
+            if len(parts) == 2:
+                mins, secs = int(parts[0]), int(parts[1])
+                return max(0, mins * 60 + secs)
+            if len(parts) == 3:
+                hours, mins, secs = int(parts[0]), int(parts[1]), int(parts[2])
+                return max(0, hours * 3600 + mins * 60 + secs)
+        except ValueError:
+            return 0
+
+    return 0
+
+
+def _get_duration_from_media_info(media_info: dict | None) -> int:
+    """Extract duration seconds from media metadata with sane fallbacks."""
+    if not media_info:
+        return 0
+
+    dur_seconds = _parse_duration_seconds(media_info.get("duracion_segundos"))
+    if dur_seconds > 0:
+        return dur_seconds
+
+    return _parse_duration_seconds(media_info.get("duracion"))
 
 
 def register_routes(app, limiter):
@@ -290,7 +392,11 @@ def register_routes(app, limiter):
                     400,
                 )
 
-            info = obtener_info_playlist(url, user_config)
+            info = obtener_info_playlist(
+                url,
+                user_config,
+                max_items=app_config.MAX_PLAYLIST_ITEMS,
+            )
 
             if not info:
                 return (
@@ -312,6 +418,22 @@ def register_routes(app, limiter):
                         }
                     ),
                     400,
+                )
+
+            if len(info["items"]) > app_config.MAX_PLAYLIST_ITEMS:
+                return (
+                    jsonify(
+                        {
+                            "error": "playlist_items_limit_exceeded",
+                            "error_key": "toast.limitPlaylistItemsExceeded",
+                            "error_params": {
+                                "max_allowed": app_config.MAX_PLAYLIST_ITEMS,
+                                "requested": len(info["items"]),
+                            },
+                            "limit_exceeded": True,
+                        }
+                    ),
+                    429,
                 )
 
             app.logger.info(
@@ -624,6 +746,7 @@ def register_routes(app, limiter):
             selected_urls = []
             total_duration = 0
             item_count = 0
+            max_content_seconds = app_config.MAX_CONTENT_DURATION * 60
 
             if is_playlist_mode and selected_urls_json:
                 try:
@@ -649,9 +772,53 @@ def register_routes(app, limiter):
 
                     # Calculate total duration from selected items
                     item_count = len(selected_urls)
+                    from logic import obtener_info_media
+
                     for url_data in selected_urls:
+                        item_url = None
+                        item_duration = 0
+
                         if isinstance(url_data, dict):
-                            total_duration += url_data.get("duracion_segundos", 0)
+                            item_url = url_data.get("url")
+                            item_duration = _parse_duration_seconds(
+                                url_data.get("duracion_segundos")
+                            )
+                            if item_duration <= 0:
+                                item_duration = _parse_duration_seconds(
+                                    url_data.get("duracion")
+                                )
+                        elif isinstance(url_data, str):
+                            item_url = url_data
+
+                        if item_duration <= 0 and item_url:
+                            try:
+                                media_info = obtener_info_media(item_url, user_config)
+                                item_duration = _get_duration_from_media_info(
+                                    media_info
+                                )
+                            except Exception as e:
+                                app.logger.warning(
+                                    f"Could not resolve playlist item duration for limits ({item_url}): {e}"
+                                )
+
+                        if item_duration > max_content_seconds:
+                            return (
+                                jsonify(
+                                    {
+                                        "error": "download_limit_exceeded",
+                                        "error_key": "toast.limitContentDurationExceeded",
+                                        "error_params": {
+                                            "requested": int(item_duration / 60),
+                                            "max_allowed": app_config.MAX_CONTENT_DURATION,
+                                        },
+                                        "limit_exceeded": True,
+                                        "reason": "content_duration_exceeded",
+                                    }
+                                ),
+                                429,
+                            )
+
+                        total_duration += max(0, item_duration)
 
                 except json.JSONDecodeError:
                     return jsonify({"error": "Error in playlist data."}), 400
@@ -663,30 +830,62 @@ def register_routes(app, limiter):
 
                     media_info = obtener_info_media(input_url, user_config)
                     if media_info:
-                        total_duration = media_info.get("duracion_segundos", 0)
+                        total_duration = _get_duration_from_media_info(media_info)
                 except Exception as e:
                     app.logger.warning(f"Could not get media duration: {e}")
                     total_duration = 0
 
+                if total_duration > max_content_seconds:
+                    return (
+                        jsonify(
+                            {
+                                "error": "download_limit_exceeded",
+                                "error_key": "toast.limitContentDurationExceeded",
+                                "error_params": {
+                                    "requested": int(total_duration / 60),
+                                    "max_allowed": app_config.MAX_CONTENT_DURATION,
+                                },
+                                "limit_exceeded": True,
+                                "reason": "content_duration_exceeded",
+                            }
+                        ),
+                        429,
+                    )
+
             # Check download limits
-            limit_check = download_tracker.check_limits(user_ip, total_duration)
+            limit_check = download_tracker.check_limits(
+                user_ip,
+                total_duration,
+                check_content_duration=not is_playlist_mode,
+                requested_item_count=item_count,
+            )
 
             if not limit_check["allowed"]:
                 reason = limit_check["reason"]
-                error_messages = {
-                    "content_duration_exceeded": f"This content exceeds the maximum allowed duration. Maximum: {limit_check['max_allowed']} minutes, Requested: {limit_check['requested']} minutes.",
-                    "hourly_downloads_exceeded": f"You have exceeded the hourly download limit. Maximum: {limit_check['max_allowed']} downloads per hour. Current: {limit_check['current']}. Please try again later.",
-                    "daily_downloads_exceeded": f"You have exceeded the daily download limit. Maximum: {limit_check['max_allowed']} downloads per day. Current: {limit_check['current']}. Please try again tomorrow.",
-                    "hourly_duration_exceeded": f"Adding this content would exceed your hourly duration limit. Current: {limit_check['current']} minutes, Requested: {limit_check['requested']} minutes, Maximum: {limit_check['max_allowed']} minutes per hour.",
-                    "daily_duration_exceeded": f"Adding this content would exceed your daily duration limit. Current: {limit_check['current']} minutes, Requested: {limit_check['requested']} minutes, Maximum: {limit_check['max_allowed']} minutes per day.",
+                reason_to_key = {
+                    "content_duration_exceeded": "toast.limitContentDurationExceeded",
+                    "hourly_downloads_exceeded": "toast.limitHourlyDownloadsExceeded",
+                    "daily_downloads_exceeded": "toast.limitDailyDownloadsExceeded",
+                    "hourly_duration_exceeded": "toast.limitHourlyDurationExceeded",
+                    "daily_duration_exceeded": "toast.limitDailyDurationExceeded",
                 }
-
-                error_msg = error_messages.get(reason, "Download limit exceeded.")
                 app.logger.warning(f"Download limit exceeded for {user_ip}: {reason}")
 
                 return (
                     jsonify(
-                        {"error": error_msg, "limit_exceeded": True, "reason": reason}
+                        {
+                            "error": "download_limit_exceeded",
+                            "error_key": reason_to_key.get(
+                                reason, "toast.rateLimitDownloadExceeded"
+                            ),
+                            "error_params": {
+                                "current": limit_check.get("current"),
+                                "requested": limit_check.get("requested"),
+                                "max_allowed": limit_check.get("max_allowed"),
+                            },
+                            "limit_exceeded": True,
+                            "reason": reason,
+                        }
                     ),
                     429,  # Too Many Requests
                 )
@@ -720,6 +919,13 @@ def register_routes(app, limiter):
                 item_configs=item_configs if is_playlist_mode else None,
                 redis_url=app_config.REDIS_URL,
                 job_timeout="30m",  # generous timeout for large playlists
+            )
+
+            # Record accepted download request so hourly/daily limits are enforced.
+            download_tracker.record_download(
+                user_ip,
+                duration_seconds=total_duration,
+                item_count=item_count,
             )
 
             return jsonify({"request_id": task_id})
@@ -826,6 +1032,9 @@ def register_error_handlers(app):
     @app.errorhandler(429)
     def ratelimit_handler(error):
         """Handles rate limit exceeded."""
+        if _is_api_request():
+            return jsonify(_rate_limit_error_payload(error)), 429
+
         # Get current configuration for display
         limits = {
             "requests_per_hour": app_config.RATE_LIMIT_PER_HOUR,

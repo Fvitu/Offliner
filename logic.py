@@ -34,6 +34,14 @@ import yt_dlp
 from spotipy.oauth2 import SpotifyClientCredentials
 from ytmusicapi import YTMusic
 
+# Proxy configuration for yt-dlp and requests (optional, set PROXY_URL env var)
+_proxy_url = os.getenv("PROXY_URL")
+if _proxy_url:
+    os.environ["http_proxy"] = _proxy_url
+    os.environ["https_proxy"] = _proxy_url
+    os.environ["HTTP_PROXY"] = _proxy_url
+    os.environ["HTTPS_PROXY"] = _proxy_url
+
 # Optional: rapidfuzz for faster fuzzy matching
 try:
     from rapidfuzz import fuzz as _rfuzz
@@ -536,6 +544,12 @@ class OfflinerCore:
             "cachedir": False,
             "encoding": "utf-8",
         }
+
+        # Proxy configuration for yt-dlp (optional, set PROXY_URL env var)
+        proxy = os.getenv("PROXY_URL")
+        if proxy:
+            opts["proxy"] = proxy
+
         if cookie_file:
             opts["cookiefile"] = str(cookie_file)
         return opts
@@ -952,7 +966,12 @@ class OfflinerCore:
     # Playlist info
     # ------------------------------------------------------------------
 
-    def get_playlist_info(self, url: str, config: dict | None = None) -> dict | None:
+    def get_playlist_info(
+        self,
+        url: str,
+        config: dict | None = None,
+        max_items: int | None = None,
+    ) -> dict | None:
         """Full playlist metadata + item list (YouTube / YTM / Spotify)."""
         probe_dir: Path | None = None
         cookie_file: Path | None = None
@@ -963,9 +982,9 @@ class OfflinerCore:
 
             if "spotify.com" in url:
                 if "/playlist/" in url:
-                    return self._spotify_playlist_info(url)
+                    return self._spotify_playlist_info(url, max_items=max_items)
                 if "/album/" in url:
-                    return self._spotify_album_info(url)
+                    return self._spotify_album_info(url, max_items=max_items)
 
             is_ytm = "music.youtube.com" in url
             playlist_id: str | None = None
@@ -975,14 +994,18 @@ class OfflinerCore:
                 playlist_id = params.get("list", [None])[0]
 
             if is_ytm and self.ytmusic and playlist_id:
-                result = self._ytmusic_playlist_info(playlist_id)
+                result = self._ytmusic_playlist_info(playlist_id, max_items=max_items)
                 if result:
                     return result
 
             normalized = (
                 url.replace("music.youtube.com", "www.youtube.com") if is_ytm else url
             )
-            return self._ytdlp_playlist_info(normalized, cookie_file)
+            return self._ytdlp_playlist_info(
+                normalized,
+                cookie_file,
+                max_items=max_items,
+            )
         except Exception as e:
             logger.error(f"Error getting playlist info: {e}")
             return None
@@ -992,7 +1015,11 @@ class OfflinerCore:
 
     # --- Spotify playlist / album info ----------------------------------------
 
-    def _spotify_playlist_info(self, url: str) -> dict | None:
+    def _spotify_playlist_info(
+        self,
+        url: str,
+        max_items: int | None = None,
+    ) -> dict | None:
         client = self._get_spotify_client({})
         if not client:
             logger.error("Spotify client not available")
@@ -1032,6 +1059,9 @@ class OfflinerCore:
                     if not track or not track.get("id"):
                         continue
                     info["items"].append(self._spotify_track_to_item(track))
+                    if max_items and len(info["items"]) > max_items:
+                        info["total"] = len(info["items"])
+                        return info
                 if not page.get("next"):
                     break
                 offset += limit
@@ -1046,7 +1076,11 @@ class OfflinerCore:
             logger.error(f"Error getting Spotify playlist: {e}")
             return None
 
-    def _spotify_album_info(self, url: str) -> dict | None:
+    def _spotify_album_info(
+        self,
+        url: str,
+        max_items: int | None = None,
+    ) -> dict | None:
         client = self._get_spotify_client({})
         if not client:
             logger.error("Spotify client not available")
@@ -1088,6 +1122,9 @@ class OfflinerCore:
                     # Album tracks don't carry album images; reuse the album thumb
                     item["thumbnail"] = thumb
                     info["items"].append(item)
+                    if max_items and len(info["items"]) > max_items:
+                        info["total"] = len(info["items"])
+                        return info
                 if not page.get("next"):
                     break
                 offset += limit
@@ -1122,12 +1159,17 @@ class OfflinerCore:
 
     # --- YouTube Music playlist info ------------------------------------------
 
-    def _ytmusic_playlist_info(self, playlist_id: str) -> dict | None:
+    def _ytmusic_playlist_info(
+        self,
+        playlist_id: str,
+        max_items: int | None = None,
+    ) -> dict | None:
         try:
             logger.info(
                 f"Getting YouTube Music playlist using ytmusicapi: {playlist_id}"
             )
-            pl = self.ytmusic.get_playlist(playlist_id, limit=None)  # type: ignore[union-attr]
+            probe_limit = (max_items + 1) if max_items else None
+            pl = self.ytmusic.get_playlist(playlist_id, limit=probe_limit)  # type: ignore[union-attr]
             if not pl or "tracks" not in pl:
                 return None
 
@@ -1185,7 +1227,10 @@ class OfflinerCore:
     # --- yt-dlp playlist info -------------------------------------------------
 
     def _ytdlp_playlist_info(
-        self, url: str, cookie_file: Path | None = None
+        self,
+        url: str,
+        cookie_file: Path | None = None,
+        max_items: int | None = None,
     ) -> dict | None:
         opts = self._base_ytdlp_opts(cookie_file)
         if cookie_file:
@@ -1195,7 +1240,7 @@ class OfflinerCore:
                 "extract_flat": "in_playlist",
                 "skip_download": True,
                 "ignoreerrors": True,
-                "playlistend": None,
+                "playlistend": (max_items + 1) if max_items else None,
                 "extractor_retries": 3,
                 "socket_timeout": 30,
                 "check_formats": None,
@@ -2411,9 +2456,9 @@ sp = _core._spotify_default  # noqa: SLF001 — kept for backward compat
 # -- Thin function wrappers (preserve original signatures) --
 
 
-def obtener_info_playlist(url, config=None):
+def obtener_info_playlist(url, config=None, max_items=None):
     """Backward-compatible wrapper for ``OfflinerCore.get_playlist_info``."""
-    return _core.get_playlist_info(url, config)
+    return _core.get_playlist_info(url, config, max_items=max_items)
 
 
 def es_url_playlist(url):

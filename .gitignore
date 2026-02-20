@@ -30,6 +30,7 @@ htmlcov/
 test.py
 .cache
 .cache_ggshield
+debug_cookies.py
 
 # Flask
 instance/

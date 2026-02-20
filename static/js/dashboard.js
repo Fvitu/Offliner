@@ -757,6 +757,16 @@ function resolveI18nMessage(message, params) {
 	return String(message ?? "");
 }
 
+function getServerErrorMessage(serverData, fallbackKey = "toast.searchError") {
+	if (serverData && serverData.error_key) {
+		return { key: serverData.error_key, params: serverData.error_params };
+	}
+	if (serverData && serverData.error) {
+		return serverData.error;
+	}
+	return { key: fallbackKey };
+}
+
 function showToast(message, type = "primary", params = undefined) {
 	const container = document.getElementById("toastContainer");
 	const toastId = "toast-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6);
@@ -1138,11 +1148,7 @@ async function performSearch() {
 			showPlaylistSelector(data.playlist);
 		} else {
 			container.style.display = "none";
-			if (data.error) {
-				showToast(data.error, "warning");
-			} else {
-				showToast({ key: "toast.noResults" }, "warning");
-			}
+			showToast(getServerErrorMessage(data, "toast.noResults"), "warning");
 		}
 	} catch (error) {
 		console.error("Search error:", error);
@@ -1207,11 +1213,9 @@ async function checkForPlaylist() {
 			showToast({ key: "toast.notPlaylist" }, "info");
 		} else {
 			container.style.display = "none";
-			if (data.error) {
-				showToast(data.error, "danger");
-			} else {
-				showToast({ key: "toast.couldNotGetPlaylist" }, "danger");
-			}
+			const isLimitError =
+				!!data?.limit_exceeded || String(data?.error_key || "").includes("rateLimit") || String(data?.error_key || "").includes("limit");
+			showToast(getServerErrorMessage(data, "toast.couldNotGetPlaylist"), isLimitError ? "warning" : "danger");
 		}
 	} catch (error) {
 		console.error("Error:", error);
@@ -1791,6 +1795,9 @@ document.getElementById("downloadForm").addEventListener("submit", function (eve
 				throw new Error(t("error.invalidServerResponse"));
 			}
 			if (!response.ok) {
+				if (data.error_key) {
+					throw new Error(resolveI18nMessage({ key: data.error_key, params: data.error_params }));
+				}
 				throw new Error(data.error || t("error.couldNotStartDownload"));
 			}
 			const requestId = data.request_id;
@@ -1965,9 +1972,8 @@ document.getElementById("downloadForm").addEventListener("submit", function (eve
 		try {
 			const text = await navigator.clipboard.readText();
 			if (text) {
-				input.value = text;
-				// trigger input events in case other scripts listen
-				input.dispatchEvent(new Event("input", { bubbles: true }));
+				input.value = text.trim();
+				await performSearch();
 			}
 		} catch (e) {
 			// ignore errors and focus input
