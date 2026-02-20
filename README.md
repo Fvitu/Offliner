@@ -194,6 +194,16 @@ MAX_CONTENT_DURATION=60
 MAX_PLAYLIST_ITEMS=100
 ```
 
+## 🖥️ AI Disclosure
+
+I used AI (LLMs) as a "pair programmer" to speed up development, specifically for:
+- **Frontend Boilerplate:** Generating the initial HTML/Bootstrap structure and CSS for the responsive cards and dark mode.
+- **Regex & Parsing:** Helping with the complex patterns needed to validate URLs and sanitize filenames.
+- **Library Documentation:** Quickly finding the correct methods for mutagen (ID3 tags) and yt-dlp configuration without digging through pages of docs.
+- **Debugging:** Troubleshooting FFmpeg conversion errors and threading issues in the download queue.
+- **Documentation:** Structuring and generating the text for this README.md file.
+- **Logic:** The core architecture, the integration of SponsorBlock, and the privacy-focused logic (no database) were designed and implemented by me.
+
 ## 🖥️ Usage
 
 1. Open the dashboard in your browser.
