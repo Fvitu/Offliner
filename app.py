@@ -8,16 +8,37 @@ import logging
 import shutil
 from logging.handlers import RotatingFileHandler
 
-from flask import Flask
+from flask import Flask, has_request_context, request
 from flask_wtf.csrf import CSRFProtect
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from config import config
 from routes import register_routes, register_error_handlers, init_rq
 
 # Base directory
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _get_client_ip() -> str:
+    """Resolve the client IP when running behind Cloudflare or another proxy."""
+    if not has_request_context():
+        return "127.0.0.1"
+
+    cf_ip = request.headers.get("CF-Connecting-IP", "").strip()
+    if cf_ip:
+        return cf_ip
+
+    forwarded_for = request.headers.get("X-Forwarded-For", "").strip()
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()
+
+    proxy_ip = get_remote_address()
+    if proxy_ip:
+        return proxy_ip
+
+    return request.remote_addr or "unknown"
 
 
 def create_app(config_name="development"):
@@ -35,6 +56,16 @@ def create_app(config_name="development"):
     # Load configuration
     app.config.from_object(config[config_name])
 
+    proxy_count = max(0, int(app.config.get("TRUST_PROXY_COUNT", 1)))
+    if proxy_count:
+        app.wsgi_app = ProxyFix(
+            app.wsgi_app,
+            x_for=proxy_count,
+            x_proto=proxy_count,
+            x_host=proxy_count,
+            x_port=proxy_count,
+        )
+
     # Setup logging
     setup_logging(app)
 
@@ -46,7 +77,7 @@ def create_app(config_name="development"):
 
     # Rate limiting to prevent abuse - using configuration values
     limiter = Limiter(
-        key_func=get_remote_address,
+        key_func=_get_client_ip,
         app=app,
         default_limits=[
             f"{app.config['RATE_LIMIT_PER_DAY']} per day",
@@ -64,15 +95,27 @@ def create_app(config_name="development"):
     from logic import init_redis as _init_logic_redis
 
     _init_logic_redis(redis_url)
-    init_rq(redis_url)
-
-    app.logger.info(f"Redis & RQ initialised ({redis_url})")
+    rq_queue = init_rq(redis_url)
+    if rq_queue is None:
+        app.logger.warning(
+            "Redis configured at %s, but RQ is unavailable in this environment. Local downloads will use in-process background threads.",
+            redis_url,
+        )
+    else:
+        app.logger.info(f"Redis & RQ initialised ({redis_url})")
 
     # Register routes
     register_routes(app, limiter)
 
     # Register error handlers
     register_error_handlers(app)
+
+    @app.after_request
+    def apply_response_headers(response):
+        referrer_policy = app.config.get("REFERRER_POLICY", "")
+        if referrer_policy:
+            response.headers.setdefault("Referrer-Policy", referrer_policy)
+        return response
 
     return app
 

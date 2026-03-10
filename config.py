@@ -6,8 +6,11 @@ No user data is stored by this service to respect user privacy.
 import os
 from dotenv import load_dotenv
 
-# Load environment variables from a .env file if present
-load_dotenv()
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Load environment variables from the project root explicitly so gunicorn/WSGI
+# startup does not depend on the current working directory.
+load_dotenv(dotenv_path=os.path.join(BASE_DIR, ".env"))
 
 
 class Config:
@@ -24,6 +27,11 @@ class Config:
     SESSION_COOKIE_SECURE = True  # Only send cookies over HTTPS in production
     SESSION_COOKIE_HTTPONLY = True  # Prevent JavaScript access to cookies
     SESSION_COOKIE_SAMESITE = "Lax"  # Helps mitigate CSRF
+    PREFERRED_URL_SCHEME = os.getenv("PREFERRED_URL_SCHEME", "https")
+
+    # Reverse proxy settings (Cloudflare Tunnel / Docker / OMV)
+    TRUST_PROXY_COUNT = int(os.getenv("TRUST_PROXY_COUNT", "1"))
+    REFERRER_POLICY = os.getenv("REFERRER_POLICY", "strict-origin-when-cross-origin")
 
     # Flask upload size limit
     MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # Limit uploads to 16MB
@@ -71,6 +79,7 @@ class DevelopmentConfig(Config):
 
     DEBUG = True
     SESSION_COOKIE_SECURE = False  # Allow HTTP during local development
+    PREFERRED_URL_SCHEME = "http"
 
 
 class ProductionConfig(Config):

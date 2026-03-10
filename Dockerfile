@@ -16,9 +16,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 4. Copy the application code into the container
 COPY . .
 
-# 5. Make the start script executable
+# 5. Make the start script executable and fix Windows line endings
 COPY start.sh .
-RUN chmod +x start.sh
+RUN sed -i 's/\r$//' start.sh && chmod +x start.sh
 
 # 6. Expose the port the app runs on (if applicable, e.g., for a web server)
 CMD ["./start.sh"]

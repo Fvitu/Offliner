@@ -56,3 +56,6 @@ redis-server*
 redis-cli*
 # Added by ggshield
 .cache_ggshield
+
+# Other
+docker-compose.yml

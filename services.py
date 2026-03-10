@@ -174,6 +174,15 @@ def start_worker(redis_url: str) -> bool:
     """
     global _worker_process  # noqa: PLW0603
 
+    try:
+        import rq  # noqa: F401
+    except Exception as exc:
+        logger.warning(
+            "Skipping RQ worker startup because RQ is unavailable in this environment: %s",
+            exc,
+        )
+        return False
+
     worker_script = os.path.join(BASE_DIR, "rq_worker.py")
 
     cmd = [sys.executable, worker_script, redis_url]

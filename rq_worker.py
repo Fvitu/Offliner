@@ -53,7 +53,12 @@ def main() -> None:
     )
 
     import redis
-    from rq import Queue, SimpleWorker, Worker
+
+    try:
+        from rq import Queue, SimpleWorker, Worker
+    except Exception as exc:  # pragma: no cover - environment-specific import failure
+        logger.error("RQ is unavailable in this environment: %s", exc)
+        raise SystemExit(1) from exc
 
     conn = redis.Redis.from_url(redis_url)
     queues = [Queue(connection=conn)]

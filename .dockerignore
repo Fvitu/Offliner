@@ -1,0 +1,16 @@
+.git
+.gitignore
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+logs
+Downloads
+backend/logs
+backend/Downloads
+.env
+.env.*
+!.env.omv.example

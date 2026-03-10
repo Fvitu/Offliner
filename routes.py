@@ -11,9 +11,17 @@ import threading
 import shutil
 import logging
 import yt_dlp
+from typing import Any
 
 import redis as _redis
-from rq import Queue as _RQQueue
+
+try:
+    from rq import Queue as _RQQueue
+
+    _RQ_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover - environment-specific import failure
+    _RQQueue = Any
+    _RQ_IMPORT_ERROR = exc
 
 from flask import (
     render_template,
@@ -45,15 +53,23 @@ app_config = get_config()
 # that both the progress store and the RQ queue share the same Redis instance.
 
 _redis_conn: _redis.Redis | None = None
-_task_queue: _RQQueue | None = None
+_task_queue: Any | None = None
 
 
-def init_rq(redis_url: str | None = None) -> _RQQueue:
+def init_rq(redis_url: str | None = None) -> Any | None:
     """Create (or return the cached) RQ Queue backed by Redis.
 
     Called from ``app.py`` during application startup.
     """
     global _redis_conn, _task_queue  # noqa: PLW0603
+
+    if _RQ_IMPORT_ERROR is not None:
+        logger.warning(
+            "RQ import unavailable in this environment; falling back to in-process background threads. Error: %s",
+            _RQ_IMPORT_ERROR,
+        )
+        return None
+
     url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379/0")
     if _redis_conn is None:
         _redis_conn = _redis.Redis.from_url(url)
@@ -62,11 +78,10 @@ def init_rq(redis_url: str | None = None) -> _RQQueue:
     return _task_queue
 
 
-def get_rq_queue() -> _RQQueue:
+def get_rq_queue() -> Any | None:
     """Return the module-level RQ queue, initialising lazily if needed."""
     if _task_queue is None:
-        init_rq()
-    assert _task_queue is not None
+        return init_rq()
     return _task_queue
 
 
@@ -82,6 +97,45 @@ def _get_progress_store():
     from logic import DownloadProgressStore
 
     return DownloadProgressStore
+
+
+def _get_request_ip() -> str:
+    """Resolve the original client IP when the app runs behind Cloudflare."""
+    cf_ip = request.headers.get("CF-Connecting-IP", "").strip()
+    if cf_ip:
+        return cf_ip
+
+    forwarded_for = request.headers.get("X-Forwarded-For", "").strip()
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()
+
+    if request.access_route:
+        return request.access_route[0]
+
+    return request.remote_addr or "unknown"
+
+
+def _enqueue_download_task(app, **job_kwargs):
+    """Enqueue downloads on RQ when available, otherwise use a local thread."""
+    from logic import execute_download_task
+
+    queue = get_rq_queue()
+    if queue is not None:
+        queue.enqueue(
+            execute_download_task,
+            **job_kwargs,
+            job_timeout="30m",
+        )
+        return
+
+    app.logger.warning(
+        "RQ is unavailable in this environment; using in-process background execution for this download."
+    )
+    threading.Thread(
+        target=execute_download_task,
+        kwargs=job_kwargs,
+        daemon=True,
+    ).start()
 
 
 # ============================================
@@ -726,7 +780,7 @@ def register_routes(app, limiter):
                 return jsonify({"error": "Please enter a URL or song name."}), 400
 
             # Get user IP for tracking
-            user_ip = request.remote_addr or "unknown"
+            user_ip = _get_request_ip()
 
             # Parse configuration
             try:
@@ -904,11 +958,8 @@ def register_routes(app, limiter):
             ProgressStore.update(task_id, temp_dir=temp_dir)
 
             # --- Enqueue download task on RQ (replaces threading.Thread) ---
-            from logic import execute_download_task
-
-            queue = get_rq_queue()
-            queue.enqueue(
-                execute_download_task,
+            _enqueue_download_task(
+                app,
                 user_config=user_config,
                 input_url=input_url,
                 task_id=task_id,
@@ -918,7 +969,6 @@ def register_routes(app, limiter):
                 selected_urls=selected_urls if is_playlist_mode else None,
                 item_configs=item_configs if is_playlist_mode else None,
                 redis_url=app_config.REDIS_URL,
-                job_timeout="30m",  # generous timeout for large playlists
             )
 
             # Record accepted download request so hourly/daily limits are enforced.
