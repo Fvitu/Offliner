@@ -1,9 +1,10 @@
-# A lightweight image of Python 3.10
-FROM python:3.10-slim
+# A lightweight image of Python 3.11
+FROM python:3.11-slim
 
-# 1. Install system dependencies (ffmpeg for video processing, git for version control)
+# 1. Install system dependencies (ffmpeg for video processing, git for version control, curl & unzip for Deno)
 RUN apt-get update && \
-    apt-get install -y ffmpeg git && \
+    apt-get install -y ffmpeg git curl unzip && \
+    curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh && \
     rm -rf /var/lib/apt/lists/*
 
 # 2. Set the working directory in the container

@@ -630,6 +630,17 @@ class OfflinerCore:
         When *cookie_file* is provided, ``cookiefile`` is added to the dict
         so yt-dlp authenticates with those cookies.
         """
+        # When user cookies are present, let yt-dlp auto-select the client
+        # surface (e.g. web, tv_samsung, visionos) to avoid SABR/missing-format
+        # errors. Without cookies, android_music has fewer bot restrictions.
+        extractor_args: dict[str, Any] = {}
+        if not cookie_file:
+            extractor_args = {
+                "youtube": {
+                    "player_client": ["android_music"],
+                },
+            }
+
         opts: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
@@ -639,14 +650,7 @@ class OfflinerCore:
             "retry_sleep_functions": {"http": lambda n: min(2**n, 30)},
             "socket_timeout": 60,
             "http_chunk_size": 10485760,
-            # Use the web client when user cookies are present so yt-dlp sends
-            # them to the same surface that issued the cookies. Android client
-            # plus web cookies can trigger 400 responses from YouTube.
-            "extractor_args": {
-                "youtube": {
-                    "player_client": ["web"] if cookie_file else ["android_music"]
-                },
-            },
+            "extractor_args": extractor_args,
             "http_headers": {
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -656,7 +660,7 @@ class OfflinerCore:
                 "Accept-Language": "en-US,en;q=0.9",
             },
             "nocheckcertificate": True,
-            "check_formats": "selected",
+            "check_formats": None,
             "force_ipv4": True,
             "continuedl": False,
             "overwrites": True,
